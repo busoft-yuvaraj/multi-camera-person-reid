@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Media files
+*.mp4
+*.avi
+*.mkv
+
+
+
+# Application Data & Logs
+logs/
+*.log
+
+gallery/
+
+test_images/
+
+# OS specific
+.DS_Store
+
+# Documentation / Plans
+implementation_plan.txt
+implementation_plan.md

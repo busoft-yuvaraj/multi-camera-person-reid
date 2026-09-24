@@ -1,0 +1,17 @@
+[project]
+name = "cctv-tracker"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "boxmot>=25.0.0",
+    "opencv-python>=4.14.0.94",
+    "pyyaml>=6.0.3",
+    "qdrant-client>=1.19.1",
+    "tensorboard>=2.21.0",
+    "torch>=2.14.0",
+    "torchreid>=0.2.5",
+    "torchvision>=0.29.0",
+    "ultralytics>=8.4.155",
+]

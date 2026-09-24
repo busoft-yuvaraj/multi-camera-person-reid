@@ -1,0 +1,56 @@
+cctv1_video: "cctv_samples/e.mp4"
+cctv2_video: "cctv_samples/e2.mp4"
+
+model_path: "yolo11n.pt"
+tracker_config: "botsort.yaml"
+imgsz: 960
+
+reid_enabled: true
+reid_model_path: "osnet_x1_0"
+reid_interval: 3
+
+min_reid_confidence: 0.35
+min_reid_width: 45
+min_reid_height: 90
+reid_min_quality: 0.42
+blur_threshold: 10.0
+
+reid_similarity_threshold: 0.70
+reid_ambiguous_margin: 0.10
+reid_bank_size: 15
+embedding_diversity_threshold: 0.90
+reid_confirm_frames: 10
+
+pose_model_path: "models/yolo11n-pose.pt"
+par_model_path: "models/mobilenet_par.pt"
+
+# Weighted Scoring configuration
+weight_reid: 0.80
+weight_par: 0.15
+weight_pose: 0.05
+
+# Combined Match Thresholds
+threshold_match: 0.90
+threshold_ambiguous: 0.82
+threshold_recovery: 0.70  # Higher threshold when trying to recover a lost track
+
+# Hysteresis and NEW ID delays
+reid_new_id_confirm_frames: 10
+gallery_update_min_quality: 0.60
+hysteresis_switch_threshold: 0.85
+hysteresis_consecutive_frames: 3
+
+track_buffer: 200
+qdrant_url: "https://1971b925-dae4-4f42-b136-f0eea6fc8e13.us-east-1-1.aws.cloud.qdrant.io"
+qdrant_api_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6NWIwYWI5ZjItMzE3Ny00YWJhLTk2NzQtYmY1NzQwMTc4YjA5In0.5U0LCA4aMVTNvoJIfmn6fTwj46d3BeI0zjwTpuwWvgo"
+qdrant_collection: "cctv-poc"
+clear_gallery_on_start: true
+
+combined_output: "output/combined_output.mp4"
+enable_debug_logging: true
+
+# Exclusion Zones (defined as relative coordinates [x_min, y_min, x_max, y_max] from 0.0 to 1.0)
+# This prevents the system from tracking people in reflections or outside the main area.
+exclusion_zones:
+  cctv1:
+    - [0.70, 0.0, 1.0, 1.0]  # Ignore the right 30% of the screen (where the glass reflection is)
