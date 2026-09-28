@@ -80,7 +80,12 @@ class MultiCameraProcessor:
         
         # We will stack horizontally, cctv1 processed and cctv2 processed.
         out_w = w * len(self.cameras_info)
-        out = cv2.VideoWriter(self.output_path, cv2.VideoWriter_fourcc(*'avc1'), fps, (out_w, h))
+        out_fps = fps if fps > 0 else 30
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(self.output_path, fourcc, out_fps, (out_w, h))
+        if not out.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(self.output_path, fourcc, out_fps, (out_w, h))
         
         cv2.namedWindow("Multi-Camera Tracker", cv2.WINDOW_NORMAL)
         

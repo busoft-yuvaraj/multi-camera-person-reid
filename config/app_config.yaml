@@ -1,5 +1,5 @@
-cctv1_video: "cctv_samples/test_1/NVR_ch10_extra1_20260918_132930.dav"
-cctv2_video: "cctv_samples/test_1/NVR_ch3_extra1_20260918_132932.dav"
+cctv1_video: "cctv_samples/test_1/a1-1.mp4"
+cctv2_video: "cctv_samples/test_1/a2.mp4"
 
 model_path: "yolo11n.pt"
 tracker_config: "botsort.yaml"
