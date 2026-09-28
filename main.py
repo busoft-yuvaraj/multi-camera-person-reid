@@ -5,6 +5,7 @@ from datetime import datetime
 from app.reid.extractor import OSNetExtractor
 from app.reid.extractors.par_extractor import ParExtractor
 from app.reid.extractors.pose_extractor import PoseExtractor
+from app.reid.extractors.attire_extractor import AttireExtractor
 from app.reid.global_gallery import GlobalGallery
 from app.reid.qdrant_gallery import QdrantGallery
 from app.reid.matcher import GlobalMatcher
@@ -45,20 +46,35 @@ def main():
     logging.info("Loading Pose Extractor...")
     pose_extractor = PoseExtractor(model_path=config.get("pose_model_path", "models/yolo11n-pose.pt"), device="cpu")
     
-    if "qdrant_url" in config:
-        logging.info("Initializing Qdrant Gallery...")
-        gallery = QdrantGallery(
-            url=config["qdrant_url"],
-            api_key=config.get("qdrant_api_key"),
-            collection_name=config.get("qdrant_collection", "cctv-poc"),
-            clear_on_start=config.get("clear_gallery_on_start", True),
-            max_embeddings=config.get("reid_bank_size", 15)
+    attire_extractor = None
+    if config.get("attire_detection_enabled", True):
+        logging.info("Loading Formal Attire Extractor...")
+        attire_extractor = AttireExtractor(
+            model_path=config.get("attire_model_path", "models/formal_attire_best.pt"),
+            conf=config.get("attire_conf_threshold", 0.25),
+            device="cpu"
         )
-    else:
+    
+    gallery = None
+    if config.get("qdrant_url"):
+        try:
+            logging.info("Initializing Qdrant Gallery...")
+            gallery = QdrantGallery(
+                url=config["qdrant_url"],
+                api_key=config.get("qdrant_api_key"),
+                collection_name=config.get("qdrant_collection", "cctv-poc"),
+                clear_on_start=config.get("clear_gallery_on_start", True),
+                max_embeddings=config.get("reid_bank_size", 15)
+            )
+        except Exception as e:
+            logging.warning(f"Could not connect to Qdrant ({e}). Falling back to local GlobalGallery.")
+            gallery = None
+
+    if gallery is None:
         logging.info("Initializing Global Gallery (Local Pickle)...")
         gallery = GlobalGallery(
-            storage_path=config["global_gallery_path"],
-            clear_on_start=config["clear_gallery_on_start"]
+            storage_path=config.get("global_gallery_path", "global_gallery.pkl"),
+            clear_on_start=config.get("clear_gallery_on_start", True)
         )
     matcher = GlobalMatcher(
         gallery=gallery,
@@ -78,6 +94,7 @@ def main():
         extractor=extractor,
         par_extractor=par_extractor,
         pose_extractor=pose_extractor,
+        attire_extractor=attire_extractor,
         gallery=gallery,
         matcher=matcher
     )

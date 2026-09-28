@@ -9,7 +9,7 @@ from app.reid.embedding_bank import TrackEmbeddingBank
 from ultralytics import YOLO
 
 class MultiCameraProcessor:
-    def __init__(self, cameras_info, output_path, config, extractor, par_extractor, pose_extractor, gallery, matcher):
+    def __init__(self, cameras_info, output_path, config, extractor, par_extractor, pose_extractor, gallery, matcher, attire_extractor=None):
         """
         cameras_info: list of dicts [{"camera_id": "cctv1", "video_path": "..."}, ...]
         """
@@ -26,10 +26,10 @@ class MultiCameraProcessor:
             os.makedirs(out_dir, exist_ok=True)
             
         self.config = config
-        self.config = config
         self.extractor = extractor
         self.par_extractor = par_extractor
         self.pose_extractor = pose_extractor
+        self.attire_extractor = attire_extractor
         self.gallery = gallery
         self.matcher = matcher
         
@@ -42,6 +42,8 @@ class MultiCameraProcessor:
                 "banks": {},
                 "global_assignments": {},
                 "match_status": {},
+                "attire_assignments": {},
+                "attire_history": {},
                 "last_frame": None,
                 "finished": False,
                 "detections": 0,
@@ -230,9 +232,30 @@ class MultiCameraProcessor:
             x1, y1, x2, y2, track_id, conf, cls = t
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
             track_id = int(track_id)
+            crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+            
+            # Formal Attire Detection
+            if self.attire_extractor and self.config.get("attire_detection_enabled", True) and crop.size > 0:
+                if frame_idx % self.config.get("attire_interval", 2) == 0 or track_id not in state["attire_assignments"]:
+                    attire_res = self.attire_extractor.extract_attire(crop)
+                    if attire_res["label"] != "unknown":
+                        if track_id not in state["attire_history"]:
+                            state["attire_history"][track_id] = []
+                        state["attire_history"][track_id].append(attire_res)
+                        if len(state["attire_history"][track_id]) > 10:
+                            state["attire_history"][track_id].pop(0)
+                        
+                        formal_count = sum(1 for a in state["attire_history"][track_id] if a.get("is_formal") is True)
+                        informal_count = sum(1 for a in state["attire_history"][track_id] if a.get("is_formal") is False)
+                        avg_conf = float(np.mean([a["conf"] for a in state["attire_history"][track_id]]))
+                        is_formal = formal_count >= informal_count
+                        state["attire_assignments"][track_id] = {
+                            "label": "Formal" if is_formal else "Informal",
+                            "conf": avg_conf,
+                            "is_formal": is_formal
+                        }
             
             if self.config["reid_enabled"] and frame_idx % self.config["reid_interval"] == 0:
-                crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
                 if crop.size > 0:
                     quality, accepted, reason, metadata = calculate_quality(
                         crop, conf, 
@@ -363,7 +386,7 @@ class MultiCameraProcessor:
                             else:
                                 state["hysteresis_counters"][track_id] = 0
                                 state["hysteresis_candidate"][track_id] = None
-
+ 
                             if added and quality >= self.config.get("gallery_update_min_quality", 0.60):
                                 self.gallery.update_identity(current_gid, [{"camera_id": camera_id, "track_id": track_id}], [entry])
                                 print(f"\n[GLOBAL ID RETAINED]\ncamera={camera_id}\ntrack={track_id}\nglobal_id={current_gid}\nreason={reason}\n")
@@ -386,7 +409,14 @@ class MultiCameraProcessor:
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
             
             # Draw combined Tracking and Global ID text above the bounding box
-            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
+            cv2.putText(frame, label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
+            
+            # Draw Attire Badge below the bounding box if available
+            if track_id in state["attire_assignments"]:
+                attire_info = state["attire_assignments"][track_id]
+                attire_text = f"[{attire_info['label']}: {int(attire_info['conf'] * 100)}%]"
+                badge_color = (0, 220, 0) if attire_info["is_formal"] else (0, 140, 255)
+                cv2.putText(frame, attire_text, (x1, min(h - 10, y2 + 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, badge_color, 2)
             
         # Draw raw detections in yellow (if tracker dropped them)
         for d in raw_detections:

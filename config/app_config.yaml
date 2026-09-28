@@ -1,5 +1,5 @@
-cctv1_video: "cctv_samples/e.mp4"
-cctv2_video: "cctv_samples/e2.mp4"
+cctv1_video: "cctv_samples/test_1/NVR_ch10_extra1_20260918_132930.dav"
+cctv2_video: "cctv_samples/test_1/NVR_ch3_extra1_20260918_132932.dav"
 
 model_path: "yolo11n.pt"
 tracker_config: "botsort.yaml"
@@ -23,6 +23,10 @@ reid_confirm_frames: 10
 
 pose_model_path: "models/yolo11n-pose.pt"
 par_model_path: "models/mobilenet_par.pt"
+attire_model_path: "models/formal_attire_best.pt"
+attire_detection_enabled: true
+attire_conf_threshold: 0.25
+attire_interval: 2
 
 # Weighted Scoring configuration
 weight_reid: 0.80
