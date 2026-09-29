@@ -1,8 +1,8 @@
-cctv1_video: "cctv_samples/test_1/a1-1.mp4"
-cctv2_video: "cctv_samples/test_1/a2.mp4"
+cctv1_video: "cctv_samples/a1-1.mp4"
+cctv2_video: "cctv_samples/a2.mp4"
 
 model_path: "yolo11n.pt"
-tracker_config: "botsort.yaml"
+tracker_config: "trackers/custom_botsort.yaml"
 imgsz: 960
 
 reid_enabled: true
@@ -16,8 +16,8 @@ reid_min_quality: 0.42
 blur_threshold: 10.0
 
 reid_similarity_threshold: 0.70
-reid_ambiguous_margin: 0.10
-reid_bank_size: 15
+reid_ambiguous_margin: 0.04        # was 0.10
+reid_bank_size: 20                 # was 15
 embedding_diversity_threshold: 0.90
 reid_confirm_frames: 10
 
@@ -29,22 +29,22 @@ attire_conf_threshold: 0.25
 attire_interval: 2
 
 # Weighted Scoring configuration
-weight_reid: 0.80
+weight_reid: 0.85
 weight_par: 0.15
-weight_pose: 0.05
+weight_pose: 0.0                   # constant 1.0 in log, so drop it
 
 # Combined Match Thresholds
-threshold_match: 0.90
-threshold_ambiguous: 0.82
-threshold_recovery: 0.70  # Higher threshold when trying to recover a lost track
+threshold_match: 0.83              # was 0.90
+threshold_ambiguous: 0.80          # was 0.82
+threshold_recovery: 0.82           # was 0.70 (lower than match, backwards)
 
 # Hysteresis and NEW ID delays
-reid_new_id_confirm_frames: 10
-gallery_update_min_quality: 0.60
+reid_new_id_confirm_frames: 20     # was 10
+gallery_update_min_quality: 0.55   # was 0.60
 hysteresis_switch_threshold: 0.85
-hysteresis_consecutive_frames: 3
+hysteresis_consecutive_frames: 5   # was 3
 
-track_buffer: 200
+track_buffer: 120
 qdrant_url: "https://1971b925-dae4-4f42-b136-f0eea6fc8e13.us-east-1-1.aws.cloud.qdrant.io"
 qdrant_api_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6NWIwYWI5ZjItMzE3Ny00YWJhLTk2NzQtYmY1NzQwMTc4YjA5In0.5U0LCA4aMVTNvoJIfmn6fTwj46d3BeI0zjwTpuwWvgo"
 qdrant_collection: "cctv-poc"
@@ -54,7 +54,49 @@ combined_output: "output/combined_output.mp4"
 enable_debug_logging: true
 
 # Exclusion Zones (defined as relative coordinates [x_min, y_min, x_max, y_max] from 0.0 to 1.0)
-# This prevents the system from tracking people in reflections or outside the main area.
 exclusion_zones:
-  cctv1:
+  waiting_lobby:
     - [0.70, 0.0, 1.0, 1.0]  # Ignore the right 30% of the screen (where the glass reflection is)
+  cctv1:
+    - [0.70, 0.0, 1.0, 1.0]
+
+# Route and Attire Violation Detection Layer
+violation_detection:
+  enabled: true
+
+  cameras:
+    waiting_lobby:
+      zone: waiting_lobby
+      video_path: "cctv_samples/waiting_lobby.mp4"
+      allowed_attire: informal
+      line:
+        enabled: true
+        start: [365, 585]
+        end: [765, 600]
+
+    pantry:
+      zone: pantry
+      video_path: "cctv_samples/pantry.mp4"
+      line:
+        enabled: false
+      allowed_attire: null
+
+    passage_1:
+      zone: passage_1
+      video_path: "cctv_samples/passage1.mp4"
+      allowed_attire: formal
+      line:
+        enabled: true
+        start: [550, 600]
+        end: [800, 600]
+
+  attire:
+    prediction_interval: 5
+    history_size: 10
+    minimum_confidence: 0.70
+
+  evidence:
+    enabled: true
+    output_dir: output/violations
+    save_image: true
+    save_metadata: true

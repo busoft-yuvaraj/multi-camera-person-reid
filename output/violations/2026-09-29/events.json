@@ -1,0 +1,44 @@
+[
+  {
+    "event_id": "VIO_0001",
+    "global_id": null,
+    "local_track_id": 46,
+    "camera_id": "waiting_lobby",
+    "zone": "waiting_lobby",
+    "actual_attire": "formal",
+    "attire_confidence": 0.78,
+    "expected_attire": "informal",
+    "violation_type": "wrong_route",
+    "timestamp": "2026-09-29T13:52:56.555267",
+    "crossing_direction": "SIDE_A_TO_SIDE_B",
+    "evidence_image": null
+  },
+  {
+    "event_id": "VIO_0002",
+    "global_id": null,
+    "local_track_id": 269,
+    "camera_id": "passage_1",
+    "zone": "passage_1",
+    "actual_attire": "informal",
+    "attire_confidence": 0.84,
+    "expected_attire": "formal",
+    "violation_type": "wrong_route",
+    "timestamp": "2026-09-29T14:03:03.302448",
+    "crossing_direction": "SIDE_B_TO_SIDE_A",
+    "evidence_image": null
+  },
+  {
+    "event_id": "VIO_0001",
+    "global_id": null,
+    "local_track_id": 5,
+    "camera_id": "waiting_lobby",
+    "zone": "waiting_lobby",
+    "actual_attire": "formal",
+    "attire_confidence": 0.79,
+    "expected_attire": "informal",
+    "violation_type": "wrong_route",
+    "timestamp": "2026-09-29T15:57:48.256731",
+    "crossing_direction": "SIDE_A_TO_SIDE_B",
+    "evidence_image": "output/violations\\2026-09-29\\VIO_0001_GID_NONE_FORMAL_WAITING_LOBBY.jpg"
+  }
+]

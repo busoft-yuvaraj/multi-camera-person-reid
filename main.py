@@ -82,10 +82,19 @@ def main():
     )
     
     logging.info("Starting Multi-Camera processing...")
-    cameras_info = [
-        {"camera_id": "cctv1", "video_path": config["cctv1_video"]},
-        {"camera_id": "cctv2", "video_path": config["cctv2_video"]}
-    ]
+    v_cfg = config.get("violation_detection", {})
+    if v_cfg.get("enabled", False) and "cameras" in v_cfg:
+        cameras_info = []
+        for cam_id, cam_item in v_cfg["cameras"].items():
+            v_path = cam_item.get("video_path")
+            if not v_path:
+                v_path = config.get(f"{cam_id}_video", "")
+            cameras_info.append({"camera_id": cam_id, "video_path": v_path})
+    else:
+        cameras_info = [
+            {"camera_id": "cctv1", "video_path": config["cctv1_video"]},
+            {"camera_id": "cctv2", "video_path": config["cctv2_video"]}
+        ]
     
     processor = MultiCameraProcessor(
         cameras_info=cameras_info,

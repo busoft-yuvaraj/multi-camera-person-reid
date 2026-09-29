@@ -1,0 +1,14 @@
+{
+  "event_id": "VIO_0001",
+  "global_id": null,
+  "local_track_id": 5,
+  "camera_id": "waiting_lobby",
+  "zone": "waiting_lobby",
+  "actual_attire": "formal",
+  "attire_confidence": 0.79,
+  "expected_attire": "informal",
+  "violation_type": "wrong_route",
+  "timestamp": "2026-09-29T15:57:48.256731",
+  "crossing_direction": "SIDE_A_TO_SIDE_B",
+  "evidence_image": "output/violations\\2026-09-29\\VIO_0001_GID_NONE_FORMAL_WAITING_LOBBY.jpg"
+}
