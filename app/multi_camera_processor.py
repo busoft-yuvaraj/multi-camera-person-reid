@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import os
+import json
 import datetime
 import logging
 
@@ -14,6 +15,7 @@ from app.violation.person_state import PersonStateManager
 from app.violation.route_policy import RoutePolicy
 from app.violation.evidence_manager import EvidenceManager
 from app.violation.violation_engine import ViolationEngine
+from app.violation.handwash_detector import HandwashDetector
 
 class MultiCameraProcessor:
     def __init__(
@@ -30,7 +32,8 @@ class MultiCameraProcessor:
         violation_engine=None,
         line_detectors=None,
         attire_smoother=None,
-        person_state_manager=None
+        person_state_manager=None,
+        handwash_detector=None
     ):
         """
         cameras_info: list of dicts [{"camera_id": "cctv1", "video_path": "..."}, ...]
@@ -70,11 +73,13 @@ class MultiCameraProcessor:
                     enabled = bool(line_cfg.get("enabled", False))
                     start = line_cfg.get("start", [0, 0])
                     end = line_cfg.get("end", [0, 0])
+                    color = tuple(line_cfg.get("color", [0, 0, 255]))
                     self.line_detectors[c_id] = LineCrossingDetector(
                         camera_id=c_id,
                         line_start=tuple(start),
                         line_end=tuple(end),
-                        enabled=enabled
+                        enabled=enabled,
+                        color=color
                     )
             
             attire_cfg = self.violation_config.get("attire", {})
@@ -109,11 +114,41 @@ class MultiCameraProcessor:
             self.evidence_manager = None
             self.violation_engine = None
         
+        # Initialize Handwash Detection Layer
+        hw_cfg = config.get("handwashing", {})
+        if handwash_detector is not None:
+            self.handwash_detector = handwash_detector
+        elif hw_cfg.get("enabled", True):
+            try:
+                import torch
+                dev = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                dev = "cpu"
+            self.handwash_detector = HandwashDetector(config=hw_cfg, device=dev)
+        else:
+            self.handwash_detector = None
+        
         # State per camera
         self.state = {}
         for cam in cameras_info:
-            self.state[cam["camera_id"]] = {
-                "cap": cv2.VideoCapture(cam["video_path"]),
+            c_id = cam["camera_id"]
+            v_path = cam.get("video_path", "")
+            if not os.path.exists(v_path):
+                # Fallback for common filename typos: panty <-> pantry
+                if "pantry" in v_path and os.path.exists(v_path.replace("pantry", "panty")):
+                    logging.warning(f"[{c_id}] Video '{v_path}' not found, falling back to '{v_path.replace('pantry', 'panty')}'")
+                    v_path = v_path.replace("pantry", "panty")
+                elif "panty" in v_path and os.path.exists(v_path.replace("panty", "pantry")):
+                    logging.warning(f"[{c_id}] Video '{v_path}' not found, falling back to '{v_path.replace('panty', 'pantry')}'")
+                    v_path = v_path.replace("panty", "pantry")
+
+            cap = cv2.VideoCapture(v_path)
+            if not cap.isOpened():
+                logging.error(f"[{c_id}] FAILED to open video: '{v_path}'. Verify file exists and format is supported.")
+
+            self.state[c_id] = {
+                "cap": cap,
+                "video_path": v_path,
                 "model": YOLO(config["model_path"]), # Independent YOLO state per camera!
                 "banks": {},
                 "global_assignments": {},
@@ -133,10 +168,34 @@ class MultiCameraProcessor:
                 "local_id_map": {},
                 "next_local_id": 1,
                 "comparison_history": {},
-                "ambiguity_tracker": {}
+                "ambiguity_tracker": {},
+                "pending_candidate": {},
+                "pending_counters": {}
             }
             
         self.running = True
+
+    def _sync_global_id_assignment(self, camera_id: str, track_id: int, gid: str):
+        """
+        Synchronizes Global ID assignment with PersonStateManager and HandwashDetector.
+        Preserves established handwash state and links local track.
+        """
+        if not gid or str(gid).upper() in ["PENDING", "AMBIGUOUS", "UNKNOWN"]:
+            return
+        if self.person_state_manager:
+            self.person_state_manager.link_track(camera_id, track_id, gid)
+            if self.handwash_detector:
+                t_hw = self.handwash_detector.get_status(track_id)
+                if t_hw != "UNKNOWN":
+                    self.person_state_manager.update_handwash_status(gid, t_hw)
+
+    def _log_par_event(self, event_dict):
+        try:
+            os.makedirs("logs", exist_ok=True)
+            with open("logs/par_detections.jsonl", "a") as f:
+                f.write(json.dumps(event_dict) + "\n")
+        except Exception:
+            pass
 
     def run(self):
         # Validate cameras
@@ -197,8 +256,13 @@ class MultiCameraProcessor:
                 if state["last_frame"] is not None:
                     display_frames.append(state["last_frame"])
                 else:
-                    # Never read a single frame, just put black
-                    display_frames.append(np.zeros((h, w, 3), dtype=np.uint8))
+                    # Never read a single frame (camera failed or offline)
+                    placeholder = np.zeros((h, w, 3), dtype=np.uint8)
+                    cv2.putText(placeholder, f"CAMERA OFFLINE: {cam_id}", (50, h // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                    cv2.putText(placeholder, f"Path: {state.get('video_path', '')}", (50, (h // 2) + 40),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+                    display_frames.append(placeholder)
             
             if all_finished:
                 break
@@ -321,15 +385,44 @@ class MultiCameraProcessor:
                 if tid in state["global_assignments"]:
                     active_global_ids.add(state["global_assignments"][tid])
 
+        # Pantry Handwashing Processing
+        current_pathway = self.route_policy.get_pathway(camera_id) if self.route_policy else camera_id.upper()
+        if (current_pathway == "PANTRY" or "pantry" in camera_id.lower()) and self.handwash_detector:
+            self.handwash_detector.process_frame(
+                frame=frame,
+                tracks=tracks,
+                frame_idx=frame_idx,
+                fps=25.0,
+                global_id_map=state["global_assignments"]
+            )
+            for t in tracks:
+                tid = int(t[4])
+                hw_st = self.handwash_detector.get_status(tid)
+                gid = state["global_assignments"].get(tid)
+                if gid and str(gid).upper() not in ["PENDING", "AMBIGUOUS", "UNKNOWN"]:
+                    if hw_st != "UNKNOWN" and self.person_state_manager:
+                        self.person_state_manager.update_handwash_status(gid, hw_st)
+
+            # Check tracks that disappeared from pantry -> transition UNKNOWN to NOT_HANDWASHED
+            current_track_ids = {int(t[4]) for t in tracks}
+            for tid, l_frame in list(state["last_seen_frame"].items()):
+                if tid not in current_track_ids and (frame_idx - l_frame > 30):
+                    lost_status = self.handwash_detector.on_track_lost(tid)
+                    gid = state["global_assignments"].get(tid)
+                    if gid and str(gid).upper() not in ["PENDING", "AMBIGUOUS", "UNKNOWN"] and self.person_state_manager:
+                        self.person_state_manager.update_handwash_status(gid, lost_status)
+
         # Draw virtual line if configured for this camera
         if self.violation_enabled and camera_id in self.line_detectors:
             ld = self.line_detectors[camera_id]
             if ld.enabled:
-                cv2.line(frame, ld.line_start, ld.line_end, (255, 255, 0), 2)
-                cv2.circle(frame, ld.line_start, 4, (255, 255, 0), -1)
-                cv2.circle(frame, ld.line_end, 4, (255, 255, 0), -1)
-                cv2.putText(frame, "Zone Line", (ld.line_start[0], max(20, ld.line_start[1] - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
+                line_col = getattr(ld, "color", (0, 0, 255))
+                cv2.line(frame, ld.line_start, ld.line_end, line_col, 3)
+                cv2.circle(frame, ld.line_start, 5, line_col, -1)
+                cv2.circle(frame, ld.line_end, 5, line_col, -1)
+                line_title = f"{current_pathway} Line" if current_pathway != "PANTRY" else "Zone Line"
+                cv2.putText(frame, line_title, (ld.line_start[0], max(20, ld.line_start[1] - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, line_col, 2)
 
         for t in tracks:
             x1, y1, x2, y2, track_id, conf, cls = t
@@ -388,17 +481,21 @@ class MultiCameraProcessor:
                     if accepted:
                         state["reid_extractions"] += 1
                         embedding = self.extractor.extract([crop])[0]
-                        par_features = self.par_extractor.extract(crop)
+                        par_attr = self.par_extractor.extract_attributes(crop) if hasattr(self.par_extractor, "extract_attributes") else {}
+                        par_features = par_attr.get("features", self.par_extractor.extract(crop))
                         viewpoint, vp_conf = self.pose_extractor.extract_viewpoint(crop)
                         metadata["viewpoint_confidence"] = float(vp_conf)
+                        metadata["viewpoint"] = viewpoint
                         
                         if track_id not in state["banks"]:
                             state["banks"][track_id] = TrackEmbeddingBank(
                                 camera_id, track_id, 
-                                max_size_per_view=self.config.get("reid_bank_size", 5), # Actually max per view is e.g. 5
-                                diversity_threshold=self.config["embedding_diversity_threshold"]
+                                max_size_per_view=self.config.get("reid_bank_size", 5),
+                                diversity_threshold=self.config.get("embedding_diversity_threshold", 0.90)
                             )
                             state["match_status"][track_id] = "PENDING"
+                            state["pending_candidate"][track_id] = None
+                            state["pending_counters"][track_id] = 0
                             
                         # Add embedding with all multi-evidence metadata
                         added, reason, entry = state["banks"][track_id].add_embedding(
@@ -407,14 +504,31 @@ class MultiCameraProcessor:
                             frame_id=frame_idx,
                             viewpoint=viewpoint,
                             par_features=par_features,
-                            quality_metadata=metadata
+                            quality_metadata=metadata,
+                            par_attributes=par_attr
                         )
+                        
+                        logging.info(
+                            f"[PAR EXTRACTION] Camera={camera_id}, Track={track_id}, View={viewpoint} | "
+                            f"Shirt={par_attr.get('upper_color', 'unknown')}, Pants={par_attr.get('lower_color', 'unknown')}, "
+                            f"Conf={par_attr.get('confidence', 0.0):.2f}"
+                        )
+                        self._log_par_event({
+                            "timestamp": datetime.datetime.now().isoformat(),
+                            "camera_id": camera_id,
+                            "track_id": track_id,
+                            "frame_idx": frame_idx,
+                            "viewpoint": viewpoint,
+                            "upper_color": par_attr.get("upper_color", "unknown"),
+                            "lower_color": par_attr.get("lower_color", "unknown"),
+                            "confidence": round(float(par_attr.get("confidence", 0.0)), 3)
+                        })
                         
                         m_status = state["match_status"].get(track_id, "PENDING")
                         
                         if m_status in ["PENDING", "AMBIGUOUS"]:
                             bank_embeddings = state["banks"][track_id].get_all_embeddings()
-                            confirm_frames = self.config.get("reid_confirm_frames", 10)
+                            confirm_frames = self.config.get("reid_confirm_frames", 5)
                             
                             # Only attempt to match if we have collected enough evidence
                             if len(bank_embeddings) >= confirm_frames:
@@ -424,12 +538,15 @@ class MultiCameraProcessor:
                                 if current_track_gid in camera_occupied_gids:
                                     camera_occupied_gids.remove(current_track_gid)
                                     
+                                consecutive_cands = state["pending_counters"].get(track_id, 1)
                                 gid, sim, second_sim, raw_status = self.matcher.match(
                                     bank_embeddings, 
-                                    exclude_gids=camera_occupied_gids
+                                    exclude_gids=camera_occupied_gids,
+                                    current_camera=camera_id,
+                                    track_id=track_id,
+                                    consecutive_candidate_count=consecutive_cands
                                 )
                                 
-                                # 1. Decide per track, not per frame: Average last 10 comparison scores
                                 if track_id not in state["comparison_history"]:
                                     state["comparison_history"][track_id] = []
                                 state["comparison_history"][track_id].append({
@@ -441,76 +558,72 @@ class MultiCameraProcessor:
                                 if len(state["comparison_history"][track_id]) > 10:
                                     state["comparison_history"][track_id].pop(0)
 
-                                history = state["comparison_history"][track_id]
-                                valid_gids = [e["gid"] for e in history if e["gid"] is not None]
+                                update_min_q = float(self.config.get("gallery_update_min_quality", 0.55))
                                 
-                                thresh_match = float(self.config.get("threshold_match", 0.83))
-                                thresh_ambig = float(self.config.get("threshold_ambiguous", 0.80))
-                                ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
-                                
-                                if valid_gids:
-                                    top_gid = max(set(valid_gids), key=valid_gids.count)
-                                    cand_entries = [e for e in history if e["gid"] == top_gid]
-                                    mean_sim = float(np.mean([e["sim"] for e in cand_entries]))
-                                    mean_second_sim = float(np.mean([e["second_sim"] for e in cand_entries]))
-                                    mean_margin = mean_sim - mean_second_sim
+                                # -------------------------------------------------------------
+                                # Decision Handling (Phases 7, 12, 14)
+                                # -------------------------------------------------------------
+                                if raw_status == "MATCH" and gid is not None:
+                                    if gid in active_global_ids and state["global_assignments"].get(track_id) != gid:
+                                        logging.warning(f"Prevented double-assignment: {gid} is already active in camera {camera_id}.")
+                                        state["match_status"][track_id] = "PENDING"
+                                    else:
+                                        state["global_assignments"][track_id] = gid
+                                        state["global_ids_set"].add(gid)
+                                        state["match_status"][track_id] = "MATCHED"
+                                        active_global_ids.add(gid)
+                                        self._sync_global_id_assignment(camera_id, track_id, gid)
+                                        state["pending_candidate"][track_id] = None
+                                        state["pending_counters"][track_id] = 0
+                                        
+                                        # Phase 14: Only update gallery when CONFIRMED
+                                        if quality >= update_min_q:
+                                            self.gallery.update_identity(gid, [{"camera_id": camera_id, "track_id": track_id}], bank_embeddings)
+                                            
+                                        print(f"\n[REID MATCH CONFIRMED]\ncamera={camera_id}\ntrack={track_id}\nevidence={len(bank_embeddings)}\nmatched={gid}\nsimilarity={sim:.2f}\nview={viewpoint}\n")
+                                        logging.info(f"[GLOBAL ID CONFIRMED] Track {track_id} in {camera_id} confirmed as {gid} (sim={sim:.2f})")
+                                        ident = getattr(self.gallery, "identities", {}).get(gid)
+                                        if ident:
+                                            p_prof = ident.par_profile if hasattr(ident, "par_profile") else ident.get("par_profile", {})
+                                            logging.info(f"[PAR PROFILE] {gid} | Stable Shirt={p_prof.get('upper_color', 'unknown')}, Pants={p_prof.get('lower_color', 'unknown')}, Obs={p_prof.get('par_count', 0)}")
+                                        
+                                elif raw_status == "PENDING" and gid is not None:
+                                    state["match_status"][track_id] = "PENDING"
+                                    prev_cand = state["pending_candidate"].get(track_id)
+                                    if prev_cand == gid:
+                                        state["pending_counters"][track_id] = state["pending_counters"].get(track_id, 0) + 1
+                                    else:
+                                        state["pending_candidate"][track_id] = gid
+                                        state["pending_counters"][track_id] = 1
+                                        
+                                    p_count = state["pending_counters"][track_id]
+                                    pending_promote_frames = int(self.config.get("pending_confirm_frames", 5))
                                     
-                                    if mean_sim >= thresh_match and (mean_margin >= ambig_margin or mean_second_sim == 0.0):
-                                        status = "MATCH"
-                                    elif mean_sim >= thresh_ambig:
-                                        status = "AMBIGUOUS"
-                                    else:
-                                        status = "NO_MATCH"
-                                        
-                                    # 2. Resolve stuck ambiguity:
-                                    # If a track stays ambiguous for about 20 comparisons with the same top candidate and gap >= 0.04, accept it
-                                    if status == "AMBIGUOUS":
-                                        prev_ambig = state["ambiguity_tracker"].get(track_id, {})
-                                        if prev_ambig.get("gid") == top_gid:
-                                            ambig_count = prev_ambig.get("count", 0) + 1
-                                        else:
-                                            ambig_count = 1
-                                        state["ambiguity_tracker"][track_id] = {"gid": top_gid, "count": ambig_count}
-                                        
-                                        if ambig_count >= 20 and mean_margin >= ambig_margin:
-                                            status = "MATCH"
-                                            logging.info(
-                                                f"[RESOLVED AMBIGUITY] camera={camera_id}, track={track_id}, accepted gid={top_gid} "
-                                                f"after {ambig_count} ambiguous comparisons (mean_sim={mean_sim:.2f}, gap={mean_margin:.2f})"
-                                            )
-                                else:
-                                    top_gid = None
-                                    mean_sim = 0.0
-                                    mean_second_sim = 0.0
-                                    mean_margin = 0.0
-                                    status = "NO_MATCH"
-                                
-                                if status == "MATCH" and top_gid is not None:
-                                    # Hungarian/uniqueness rule: no two tracks in the same camera can share a global ID
-                                    if top_gid in active_global_ids and state["global_assignments"].get(track_id) != top_gid:
-                                        logging.warning(f"Prevented double-assignment: {top_gid} is already active in camera {camera_id}.")
-                                        status = "AMBIGUOUS"
-                                    else:
-                                        is_recovery = track_id not in state["no_match_counters"] and len(bank_embeddings) > confirm_frames + 5
-                                        rec_thresh = float(self.config.get("threshold_recovery", 0.82))
-                                        if not is_recovery or (is_recovery and mean_sim >= rec_thresh):
-                                            state["global_assignments"][track_id] = top_gid
-                                            state["global_ids_set"].add(top_gid)
+                                    # Promotion from PENDING -> CONFIRMED (Phase 7: CCTV1 BACK -> CCTV2 SIDE -> CCTV2 FRONT)
+                                    if p_count >= pending_promote_frames or (viewpoint == "FRONT" and sim >= 0.72):
+                                        if gid not in active_global_ids or state["global_assignments"].get(track_id) == gid:
+                                            state["global_assignments"][track_id] = gid
+                                            state["global_ids_set"].add(gid)
                                             state["match_status"][track_id] = "MATCHED"
-                                            active_global_ids.add(top_gid)
-                                            
-                                            update_min_q = float(self.config.get("gallery_update_min_quality", 0.55))
+                                            active_global_ids.add(gid)
+                                            self._sync_global_id_assignment(camera_id, track_id, gid)
                                             if quality >= update_min_q:
-                                                self.gallery.update_identity(top_gid, [{"camera_id": camera_id, "track_id": track_id}], bank_embeddings)
-                                            
-                                            print(f"\n[REID MATCH]\ncamera={camera_id}\ntrack={track_id}\nevidence={len(bank_embeddings)}\nquality={quality:.2f}\nmean_similarity={mean_sim:.2f}\nmean_margin={mean_margin:.2f}\nmatched={top_gid}\n")
-                                            logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={top_gid}, mean_sim={mean_sim:.2f}, status=MATCH")
-                                        else:
-                                            status = "AMBIGUOUS"
-                                            
-                                if status == "NO_MATCH":
+                                                self.gallery.update_identity(gid, [{"camera_id": camera_id, "track_id": track_id}], bank_embeddings)
+                                                
+                                            print(f"\n[GLOBAL ID CONFIRMED FROM PENDING]\ncamera={camera_id}\ntrack={track_id}\nglobal_id={gid}\nsimilarity={sim:.2f}\nconsecutive_frames={p_count}\nview={viewpoint}\n")
+                                            logging.info(f"[GLOBAL ID CONFIRMED] Track {track_id} in {camera_id} confirmed as {gid} from PENDING after {p_count} checks")
+                                            ident = getattr(self.gallery, "identities", {}).get(gid)
+                                            if ident:
+                                                p_prof = ident.par_profile if hasattr(ident, "par_profile") else ident.get("par_profile", {})
+                                                logging.info(f"[PAR PROFILE] {gid} | Stable Shirt={p_prof.get('upper_color', 'unknown')}, Pants={p_prof.get('lower_color', 'unknown')}, Obs={p_prof.get('par_count', 0)}")
+                                    else:
+                                        # Reset no_match_counters so a premature new ID is NEVER spawned while in PENDING
+                                        state["no_match_counters"][track_id] = 0
+                                        logging.info(f"[GLOBAL MATCH PENDING] Track {track_id} in {camera_id} -> Candidate {gid} (Score={sim:.2f}, Count={p_count}/{pending_promote_frames})")
+                                        
+                                elif raw_status == "NO_MATCH":
                                     state["no_match_counters"][track_id] = state["no_match_counters"].get(track_id, 0) + 1
-                                    new_id_confirm = int(self.config.get("reid_new_id_confirm_frames", 20))
+                                    new_id_confirm = int(self.config.get("reid_new_id_confirm_frames", 25))
                                     
                                     if state["no_match_counters"][track_id] >= new_id_confirm:
                                         new_gid = self.gallery.add_identity([{"camera_id": camera_id, "track_id": track_id}], bank_embeddings)
@@ -518,16 +631,18 @@ class MultiCameraProcessor:
                                         state["global_ids_set"].add(new_gid)
                                         state["match_status"][track_id] = "MATCHED"
                                         active_global_ids.add(new_gid)
+                                        self._sync_global_id_assignment(camera_id, track_id, new_gid)
+                                        state["pending_candidate"][track_id] = None
+                                        state["pending_counters"][track_id] = 0
                                         
                                         print(f"\n[GLOBAL ID NEW]\ncamera={camera_id}\ntrack={track_id}\nevidence={len(bank_embeddings)}\nstatus=NEW\nglobal_id={new_gid}\n")
-                                        logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={new_gid}, sim={mean_sim:.2f}, status=NEW")
+                                        logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={new_gid}, sim={sim:.2f}, status=NEW")
+                                        ident = getattr(self.gallery, "identities", {}).get(new_gid)
+                                        if ident:
+                                            p_prof = ident.par_profile if hasattr(ident, "par_profile") else ident.get("par_profile", {})
+                                            logging.info(f"[PAR PROFILE] {new_gid} | Initial Shirt={p_prof.get('upper_color', 'unknown')}, Pants={p_prof.get('lower_color', 'unknown')}, Obs={p_prof.get('par_count', 0)}")
                                     else:
-                                        state["match_status"][track_id] = "AMBIGUOUS"
-                                        print(f"\n[DELAY NEW ID]\ncamera={camera_id}\ntrack={track_id}\nno_match_count={state['no_match_counters'][track_id]}/{new_id_confirm}\naction=WAIT_FOR_MORE_EVIDENCE\n")
-                                        
-                                if status == "AMBIGUOUS":
-                                    state["match_status"][track_id] = "AMBIGUOUS"
-                                    logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid=PENDING, mean_sim={mean_sim:.2f}, status=AMBIGUOUS")
+                                        state["match_status"][track_id] = "PENDING"
                                 
                         elif m_status == "MATCHED":
                             current_gid = state["global_assignments"][track_id]
@@ -542,7 +657,7 @@ class MultiCameraProcessor:
                             
                             h_thresh = float(self.config.get("hysteresis_switch_threshold", 0.85))
                             h_frames = int(self.config.get("hysteresis_consecutive_frames", 5))
-                            ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
+                            ambig_margin = float(self.config.get("hysteresis_switch_margin", self.config.get("reid_ambiguous_margin", 0.04)))
                             
                             # Hungarian 1-to-1 constraint: cannot switch to an ID currently held by another track in this camera
                             if status == "MATCH" and gid != current_gid and gid not in active_global_ids and sim >= h_thresh and margin >= ambig_margin:
@@ -561,6 +676,7 @@ class MultiCameraProcessor:
                                         state["global_ids_set"].remove(current_gid)
                                     state["global_assignments"][track_id] = gid
                                     state["global_ids_set"].add(gid)
+                                    self._sync_global_id_assignment(camera_id, track_id, gid)
                                     
                                     if current_gid in active_global_ids:
                                         active_global_ids.remove(current_gid)
@@ -578,66 +694,91 @@ class MultiCameraProcessor:
                                 self.gallery.update_identity(current_gid, [{"camera_id": camera_id, "track_id": track_id}], [entry])
                                 logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={current_gid}, status=RETAINED, reason={reason}")
                                 
-            # Route & Attire Violation Detection Check
+            # Pathway & Handwashing Validation Check
             if self.violation_enabled and camera_id in self.line_detectors:
                 ld = self.line_detectors[camera_id]
                 crossing_evt = ld.check_crossing(track_id, (x1, y1, x2, y2))
                 if crossing_evt:
-                    stable_att = self.attire_smoother.get_stable_attire(track_id) if self.attire_smoother else {}
-                    if not stable_att.get("final_attire") or stable_att["final_attire"] == "unknown":
-                        if track_id in state["attire_assignments"]:
-                            a_info = state["attire_assignments"][track_id]
-                            stable_att = {"final_attire": a_info["label"].lower(), "confidence": a_info["conf"]}
-
                     current_gid = state["global_assignments"].get(track_id)
                     resolved_gid = current_gid if (current_gid and current_gid not in ["PENDING", "AMBIGUOUS", "UNKNOWN"]) else None
+                    if resolved_gid is None:
+                        resolved_gid = state.get("pending_candidate", {}).get(track_id)
+
+                    hw_status = "UNKNOWN"
+                    if resolved_gid and self.person_state_manager:
+                        hw_status = self.person_state_manager.get_handwash_status(resolved_gid)
+                    elif self.handwash_detector:
+                        hw_status = self.handwash_detector.get_status(track_id)
 
                     self.violation_engine.process_crossing(
                         crossing_event=crossing_evt,
                         global_id=resolved_gid,
-                        stable_attire=stable_att,
+                        handwash_status=hw_status,
                         frame=frame,
                         bbox=(x1, y1, x2, y2)
                     )
 
             m_status = state.get("match_status", {}).get(track_id, "PENDING")
             vio_evt = self.violation_engine.get_violation(camera_id, track_id) if (self.violation_enabled and self.violation_engine) else None
-            
-            if vio_evt:
-                # Violation Rendering (Red Box & Violation Metadata)
+            val_info = self.violation_engine.get_validation(camera_id, track_id) if (self.violation_enabled and self.violation_engine) else None
+
+            current_gid = state["global_assignments"].get(track_id)
+            resolved_gid = current_gid if (current_gid and current_gid not in ["PENDING", "AMBIGUOUS", "UNKNOWN"]) else None
+            gid_display = resolved_gid or (f"PENDING ({state.get('pending_candidate', {}).get(track_id)})" if state.get("pending_candidate", {}).get(track_id) else "PENDING")
+
+            hw_status = "UNKNOWN"
+            if resolved_gid and self.person_state_manager:
+                hw_status = self.person_state_manager.get_handwash_status(resolved_gid)
+            elif self.handwash_detector:
+                hw_status = self.handwash_detector.get_status(track_id)
+
+            hw_flag = "YES" if hw_status == "HANDWASHED" else ("NO" if hw_status == "NOT_HANDWASHED" else "UNKNOWN")
+            current_path = self.route_policy.get_pathway(camera_id) if self.route_policy else camera_id.upper()
+
+            is_vio = (vio_evt is not None) or (resolved_gid and self.person_state_manager and self.person_state_manager.is_in_violation(resolved_gid))
+            if is_vio:
+                # Violation Rendering (Red Box & Handwash / Pathway Metadata)
                 color = (0, 0, 255)
-                gid_display = vio_evt.global_id or state["global_assignments"].get(track_id, "PENDING")
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
-                
+
                 # Top Violation Banner
                 vio_label = f"VIOLATION | GID: {gid_display}"
                 cv2.putText(frame, vio_label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-                
-                # Bottom Attire vs Expected Badge
-                sub_label = f"Attire: {vio_evt.actual_attire.upper()} | Expected: {vio_evt.expected_attire.upper()}"
+
+                # Bottom Handwash + Pathway Badge
+                path_name = vio_evt.pathway if vio_evt else current_path
+                sub_label = f"Handwash: {hw_flag} | Path: {path_name} | VIOLATION"
+                cv2.putText(frame, sub_label, (x1, min(h - 10, y2 + 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+            elif val_info:
+                # Valid Movement Rendering (Green Box)
+                color = (0, 255, 0)
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+                valid_label = f"VALID | GID: {gid_display}"
+                cv2.putText(frame, valid_label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+                val_path = val_info.get("pathway", current_path)
+                sub_label = f"Handwash: {hw_flag} | Path: {val_path} | VALID"
                 cv2.putText(frame, sub_label, (x1, min(h - 10, y2 + 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
             else:
                 if m_status == "MATCHED":
-                    gid = state["global_assignments"].get(track_id, "UNKNOWN")
                     color = (0, 255, 0)
-                    label = f"Trk: {track_id} | GID: {gid}"
+                    label = f"Trk: {track_id} | GID: {gid_display}"
                 elif m_status in ["PENDING", "AMBIGUOUS"]:
                     color = (0, 165, 255) # Orange
-                    label = f"Trk: {track_id} | GID: {m_status}"
+                    cand = state.get("pending_candidate", {}).get(track_id)
+                    label = f"Trk: {track_id} | GID: PENDING ({cand})" if cand else f"Trk: {track_id} | GID: PENDING"
                 else:
                     color = (255, 255, 0)
                     label = f"Trk: {track_id} | GID: UNKNOWN"
-                
-                # Draw the colored bounding box
+
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                cv2.putText(frame, label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)
-                
-                # Draw Attire Badge below the bounding box if available
-                if track_id in state["attire_assignments"]:
-                    attire_info = state["attire_assignments"][track_id]
-                    attire_text = f"[{attire_info['label']}: {int(attire_info['conf'] * 100)}%]"
-                    badge_color = (0, 220, 0) if attire_info["is_formal"] else (0, 140, 255)
-                    cv2.putText(frame, attire_text, (x1, min(h - 10, y2 + 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, badge_color, 2)
+                cv2.putText(frame, label, (x1, max(30, y1 - 10)), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+                # Handwash status badge below box
+                hw_color = (0, 255, 0) if hw_flag == "YES" else ((0, 0, 255) if hw_flag == "NO" else (0, 255, 255))
+                sub_label = f"Handwash: {hw_flag} | Path: {current_path}"
+                cv2.putText(frame, sub_label, (x1, min(h - 10, y2 + 25)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, hw_color, 2)
             
         # Draw raw detections in yellow (if tracker dropped them)
         for d in raw_detections:

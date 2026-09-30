@@ -1,102 +1,267 @@
-cctv1_video: "cctv_samples/a1-1.mp4"
-cctv2_video: "cctv_samples/a2.mp4"
+# ============================================================
+# CAMERA INPUTS
+# ============================================================
+
+cameras:
+  waiting_lobby:
+    zone: waiting_lobby
+    video_path: "cctv_samples/hand/waiting_lobby.mp4"
+
+  pantry:
+    zone: pantry
+    video_path: "cctv_samples/hand/pantry.mp4"
+
+  passage_1:
+    zone: passage_1
+    video_path: "cctv_samples/hand/passage1.mp4"
+
+
+# ============================================================
+# DETECTION / TRACKING
+# ============================================================
 
 model_path: "yolo11n.pt"
-tracker_config: "trackers/custom_botsort.yaml"
+
+tracker_config: "botsort.yaml"
+
 imgsz: 960
 
+track_buffer: 200
+
+
+# ============================================================
+# REID
+# ============================================================
+
 reid_enabled: true
+
 reid_model_path: "osnet_x1_0"
+
+# Current value 3 is giving frequent evaluations.
+# Keep 3 for accuracy testing.
 reid_interval: 3
 
 min_reid_confidence: 0.35
+
 min_reid_width: 45
+
 min_reid_height: 90
-reid_min_quality: 0.42
+
+reid_min_quality: 0.45
+
 blur_threshold: 10.0
 
+
+# ============================================================
+# REID EMBEDDING BANK
+# ============================================================
+
 reid_similarity_threshold: 0.70
-reid_ambiguous_margin: 0.04        # was 0.10
-reid_bank_size: 20                 # was 15
+
+reid_bank_size: 15
+
 embedding_diversity_threshold: 0.90
+
 reid_confirm_frames: 10
 
+
+# ============================================================
+# GLOBAL ID MATCHING (Modular Multi-Signal Scoring)
+# ============================================================
+
+weight_reid: 0.60
+weight_par: 0.25
+weight_context: 0.15
+
+# Match and PENDING thresholds
+threshold_match: 0.80
+threshold_ambiguous: 0.68
+threshold_cross_view: 0.62
+threshold_recovery: 0.75
+reid_ambiguous_margin: 0.04
+
+# Evidence thresholds
+reid_confirm_frames: 5
+pending_confirm_frames: 5
+
+# Camera Transition Network
+camera_transitions:
+  waiting_lobby: ["pantry", "passage_1"]
+  pantry: ["waiting_lobby", "passage_1"]
+  passage_1: ["waiting_lobby", "pantry"]
+  cctv1: ["cctv2", "cctv3"]
+  cctv2: ["cctv1", "cctv3"]
+
+
+# ============================================================
+# NEW GLOBAL ID CREATION
+# ============================================================
+
+reid_new_id_confirm_frames: 25
+
+
+# ============================================================
+# GALLERY UPDATE (Quality Filter)
+# ============================================================
+
+gallery_update_min_quality: 0.60
+
+
+# ============================================================
+# HYSTERESIS / ID STABILITY
+# ============================================================
+
+# Once a person is identified, don't allow another GID
+# to replace it easily.
+
+hysteresis_switch_threshold: 0.92
+
+hysteresis_switch_margin: 0.12
+
+hysteresis_consecutive_frames: 10
+
+
+# ============================================================
+# MODELS
+# ============================================================
+
 pose_model_path: "models/yolo11n-pose.pt"
+
 par_model_path: "models/mobilenet_par.pt"
+
 attire_model_path: "models/formal_attire_best.pt"
+
+
+# ============================================================
+# ATTIRE
+# ============================================================
+
 attire_detection_enabled: true
-attire_conf_threshold: 0.25
-attire_interval: 2
 
-# Weighted Scoring configuration
-weight_reid: 0.85
-weight_par: 0.15
-weight_pose: 0.0                   # constant 1.0 in log, so drop it
+attire_conf_threshold: 0.40
 
-# Combined Match Thresholds
-threshold_match: 0.83              # was 0.90
-threshold_ambiguous: 0.80          # was 0.82
-threshold_recovery: 0.82           # was 0.70 (lower than match, backwards)
+attire_interval: 5
 
-# Hysteresis and NEW ID delays
-reid_new_id_confirm_frames: 20     # was 10
-gallery_update_min_quality: 0.55   # was 0.60
-hysteresis_switch_threshold: 0.85
-hysteresis_consecutive_frames: 5   # was 3
 
-track_buffer: 120
+# ============================================================
+# QDRANT
+# ============================================================
+
 qdrant_url: "https://1971b925-dae4-4f42-b136-f0eea6fc8e13.us-east-1-1.aws.cloud.qdrant.io"
+
 qdrant_api_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6NWIwYWI5ZjItMzE3Ny00YWJhLTk2NzQtYmY1NzQwMTc4YjA5In0.5U0LCA4aMVTNvoJIfmn6fTwj46d3BeI0zjwTpuwWvgo"
+
 qdrant_collection: "cctv-poc"
+
 clear_gallery_on_start: true
 
+
+# ============================================================
+# OUTPUT
+# ============================================================
+
 combined_output: "output/combined_output.mp4"
+
 enable_debug_logging: true
 
-# Exclusion Zones (defined as relative coordinates [x_min, y_min, x_max, y_max] from 0.0 to 1.0)
+
+# ============================================================
+# EXCLUSION ZONES
+# ============================================================
+
 exclusion_zones:
+
   waiting_lobby:
-    - [0.70, 0.0, 1.0, 1.0]  # Ignore the right 30% of the screen (where the glass reflection is)
+    - [0.70, 0.0, 1.0, 1.0]
+
   cctv1:
     - [0.70, 0.0, 1.0, 1.0]
 
-# Route and Attire Violation Detection Layer
+
+# ============================================================
+# HANDWASHING DETECTION
+# ============================================================
+
+handwashing:
+  enabled: true
+  sink_model_path: "models/yolo11n(best).pt"
+  hand_model_path: "models/yolo_11n(best).pt"
+  step_model_path: "models/sink_model(best).pt"
+  sink_confidence: 0.30
+  hand_confidence: 0.40
+  step_confidence: 0.35
+  min_washing_duration: 5.0
+  detection_confirmation_frames: 3
+  reset_after_no_detection_seconds: 1.0
+  require_hand_movement: true
+  min_hand_movement: 2.0
+
+
+# ============================================================
+# VIOLATION DETECTION
+# ============================================================
+
 violation_detection:
+
   enabled: true
 
   cameras:
+
     waiting_lobby:
+
       zone: waiting_lobby
-      video_path: "cctv_samples/waiting_lobby.mp4"
-      allowed_attire: informal
+
+      pathway: exit
+
+      video_path: "cctv_samples/hand/waiting_lobby.mp4"
+
       line:
+
         enabled: true
-        start: [365, 585]
-        end: [765, 600]
+
+        start: [420, 265]
+
+        end: [662, 265]
+
+        color: [0, 0, 255]
+
 
     pantry:
+
       zone: pantry
-      video_path: "cctv_samples/pantry.mp4"
+
+      pathway: pantry
+
+      video_path: "cctv_samples/hand/pantry.mp4"
+
       line:
+
         enabled: false
-      allowed_attire: null
+
 
     passage_1:
+
       zone: passage_1
-      video_path: "cctv_samples/passage1.mp4"
-      allowed_attire: formal
+
+      pathway: passage_1
+
+      video_path: "cctv_samples/hand/passage1.mp4"
+
       line:
+
         enabled: true
+
         start: [550, 600]
+
         end: [800, 600]
 
-  attire:
-    prediction_interval: 5
-    history_size: 10
-    minimum_confidence: 0.70
 
   evidence:
+
     enabled: true
-    output_dir: output/violations
+
+    output_dir: "output/violations"
+
     save_image: true
+
     save_metadata: true

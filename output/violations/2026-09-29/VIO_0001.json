@@ -8,7 +8,7 @@
   "attire_confidence": 0.79,
   "expected_attire": "informal",
   "violation_type": "wrong_route",
-  "timestamp": "2026-09-29T15:57:48.256731",
+  "timestamp": "2026-09-29T17:06:07.122776",
   "crossing_direction": "SIDE_A_TO_SIDE_B",
   "evidence_image": "output/violations\\2026-09-29\\VIO_0001_GID_NONE_FORMAL_WAITING_LOBBY.jpg"
 }

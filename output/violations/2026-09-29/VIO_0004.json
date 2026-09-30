@@ -1,0 +1,14 @@
+{
+  "event_id": "VIO_0004",
+  "global_id": null,
+  "local_track_id": 14,
+  "camera_id": "passage_1",
+  "zone": "passage_1",
+  "actual_attire": "informal",
+  "attire_confidence": 0.8,
+  "expected_attire": "formal",
+  "violation_type": "wrong_route",
+  "timestamp": "2026-09-29T17:13:30.050512",
+  "crossing_direction": "SIDE_A_TO_SIDE_B",
+  "evidence_image": "output/violations\\2026-09-29\\VIO_0004_GID_NONE_INFORMAL_PASSAGE_1.jpg"
+}

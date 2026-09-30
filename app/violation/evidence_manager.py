@@ -1,6 +1,7 @@
 import os
 import json
 import datetime
+import logging
 import cv2
 import numpy as np
 from typing import Optional, Dict, Any, Tuple
@@ -45,10 +46,10 @@ class EvidenceManager:
 
         daily_dir = self._get_daily_dir(event.timestamp)
         gid_clean = str(event.global_id or "GID_NONE").replace(" ", "_")
-        attire_clean = str(event.actual_attire).upper()
-        zone_clean = str(event.zone).upper()
+        hw_val = str(getattr(event, "handwash_status", getattr(event, "actual_attire", "UNKNOWN"))).upper()
+        path_val = str(getattr(event, "pathway", event.zone)).upper()
 
-        image_filename = f"{event.event_id}_{gid_clean}_{attire_clean}_{zone_clean}.jpg"
+        image_filename = f"{event.event_id}_{gid_clean}_{hw_val}_{path_val}.jpg"
         image_path = os.path.join(daily_dir, image_filename)
         event.evidence_image = image_path
 
@@ -59,12 +60,12 @@ class EvidenceManager:
             # 1. Draw virtual line if provided
             if line_coords:
                 p1, p2 = line_coords
-                cv2.line(annotated_frame, p1, p2, (255, 255, 0), 3)
-                cv2.circle(annotated_frame, p1, 5, (255, 255, 0), -1)
-                cv2.circle(annotated_frame, p2, 5, (255, 255, 0), -1)
+                cv2.line(annotated_frame, p1, p2, (0, 0, 255), 3)
+                cv2.circle(annotated_frame, p1, 5, (0, 0, 255), -1)
+                cv2.circle(annotated_frame, p2, 5, (0, 0, 255), -1)
                 cv2.putText(
-                    annotated_frame, "Virtual Line", (p1[0] + 5, p1[1] - 5),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 0), 2
+                    annotated_frame, "Virtual Line", (p1[0] + 5, max(20, p1[1] - 5)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2
                 )
 
             # 2. Draw person bounding box
@@ -80,8 +81,8 @@ class EvidenceManager:
                 "VIOLATION",
                 f"Global ID: {event.global_id or 'UNKNOWN'}",
                 f"Track ID: {event.local_track_id}",
-                f"Attire: {event.actual_attire.upper()}",
-                f"Expected: {event.expected_attire.upper() if event.expected_attire else 'NONE'}",
+                f"Handwash: {hw_val}",
+                f"Pathway: {path_val}",
                 f"Camera: {event.camera_id.upper()}",
                 f"Time: {event.timestamp.split('T')[-1][:8] if 'T' in event.timestamp else event.timestamp}"
             ]
@@ -106,6 +107,15 @@ class EvidenceManager:
                 )
 
             cv2.imwrite(image_path, annotated_frame)
+            logging.info(f"[EVIDENCE SAVED] Violation snapshot saved to {image_path}")
+
+            # Also mirror snapshot to evidence/ directory for immediate access
+            try:
+                root_ev = "evidence"
+                os.makedirs(root_ev, exist_ok=True)
+                cv2.imwrite(os.path.join(root_ev, image_filename), annotated_frame)
+            except Exception:
+                pass
 
         if self.save_metadata:
             # Save single event JSON

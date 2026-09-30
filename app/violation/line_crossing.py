@@ -22,11 +22,19 @@ class LineCrossingDetector:
     Detects when a tracked person's foot point crosses an arbitrary 2D virtual line.
     Line coordinates are configured via start (X1, Y1) and end (X2, Y2).
     """
-    def __init__(self, camera_id: str, line_start: Tuple[int, int], line_end: Tuple[int, int], enabled: bool = True):
+    def __init__(
+        self,
+        camera_id: str,
+        line_start: Tuple[int, int],
+        line_end: Tuple[int, int],
+        enabled: bool = True,
+        color: Tuple[int, int, int] = (0, 0, 255)
+    ):
         self.camera_id = camera_id
         self.line_start = (int(line_start[0]), int(line_start[1]))
         self.line_end = (int(line_end[0]), int(line_end[1]))
         self.enabled = enabled
+        self.color = tuple(color)
         
         # Mapping: local_track_id -> previous side ("SIDE_A" or "SIDE_B")
         self.track_sides: Dict[int, str] = {}

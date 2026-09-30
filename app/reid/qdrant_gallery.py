@@ -1,3 +1,6 @@
+import os
+import json
+import logging
 import threading
 import uuid
 from qdrant_client import QdrantClient
@@ -46,13 +49,23 @@ class QdrantGallery:
                         "tracks": record.payload.get("tracks", []),
                         "cameras_seen": set(record.payload.get("cameras_seen", [])),
                         "status": record.payload.get("status", "TENTATIVE"),
-                        "point_ids": []
+                        "point_ids": [],
+                        "par_profile": record.payload.get("stable_par_profile", {
+                            "upper_color": record.payload.get("upper_color", "unknown"),
+                            "lower_color": record.payload.get("lower_color", "unknown"),
+                            "par_count": 1
+                        })
                     }
                 # Reconstruct dict format for compatibility
+                par_attr = record.payload.get("par_attributes") or {
+                    "upper_color": record.payload.get("upper_color", "unknown"),
+                    "lower_color": record.payload.get("lower_color", "unknown")
+                }
                 emb_dict = {
                     "embedding": record.vector,
                     "viewpoint": record.payload.get("viewpoint", "UNKNOWN"),
                     "par_features": record.payload.get("par_features", []),
+                    "par_attributes": par_attr,
                     "quality": record.payload.get("quality", 0.0),
                     "metadata": record.payload.get("metadata", {})
                 }
@@ -141,8 +154,65 @@ class QdrantGallery:
             self._upload_to_qdrant(gid)
             return True
             
+    def _update_par_profile(self, ident):
+        upper_votes = {}
+        lower_votes = {}
+        for emb in ident.get("embeddings", []):
+            if isinstance(emb, dict):
+                par_attr = emb.get("par_attributes") or {}
+                u = par_attr.get("upper_color")
+                l = par_attr.get("lower_color")
+                if u and u != "unknown":
+                    upper_votes[u] = upper_votes.get(u, 0) + 1
+                if l and l != "unknown":
+                    lower_votes[l] = lower_votes.get(l, 0) + 1
+
+        ident["par_profile"] = {
+            "upper_color": max(upper_votes, key=upper_votes.get) if upper_votes else "unknown",
+            "lower_color": max(lower_votes, key=lower_votes.get) if lower_votes else "unknown",
+            "upper_votes": upper_votes,
+            "lower_votes": lower_votes,
+            "par_count": len(ident.get("embeddings", []))
+        }
+
+    def _export_par_profiles(self):
+        try:
+            os.makedirs("gallery", exist_ok=True)
+            par_profiles = {}
+            metadata = {}
+            for gid, ident in self.identities.items():
+                par_p = ident.get("par_profile", {})
+                par_profiles[gid] = {
+                    "global_id": gid,
+                    "status": ident.get("status", "TENTATIVE"),
+                    "upper_color": str(par_p.get("upper_color", "unknown")),
+                    "lower_color": str(par_p.get("lower_color", "unknown")),
+                    "upper_votes": par_p.get("upper_votes", {}),
+                    "lower_votes": par_p.get("lower_votes", {}),
+                    "total_observations": int(par_p.get("par_count", 0)),
+                    "cameras_seen": list(ident.get("cameras_seen", []))
+                }
+                metadata[gid] = {
+                    "tracks": ident.get("tracks", []),
+                    "cameras_seen": list(ident.get("cameras_seen", [])),
+                    "status": ident.get("status", "TENTATIVE"),
+                    "num_embeddings": len(ident.get("embeddings", [])),
+                    "par_profile": {
+                        "upper_color": str(par_p.get("upper_color", "unknown")),
+                        "lower_color": str(par_p.get("lower_color", "unknown")),
+                        "par_count": int(par_p.get("par_count", 0))
+                    }
+                }
+            with open("gallery/par_profiles.json", "w") as f:
+                json.dump(par_profiles, f, indent=4)
+            with open("gallery/global_gallery_metadata.json", "w") as f:
+                json.dump(metadata, f, indent=4)
+        except Exception as e:
+            logging.debug(f"Failed to export par_profiles.json: {e}")
+
     def _upload_to_qdrant(self, gid):
         ident = self.identities[gid]
+        self._update_par_profile(ident)
         
         # Grab old point IDs to delete
         old_point_ids = ident.get("point_ids", [])
@@ -163,12 +233,29 @@ class QdrantGallery:
             }
             
             if isinstance(emb, dict):
+                par_attr = emb.get("par_attributes") or {}
                 payload.update({
                     "viewpoint": emb.get("viewpoint", "UNKNOWN"),
+                    "upper_color": par_attr.get("upper_color", "unknown"),
+                    "lower_color": par_attr.get("lower_color", "unknown"),
+                    "par_attributes": {
+                        "upper_color": par_attr.get("upper_color", "unknown"),
+                        "lower_color": par_attr.get("lower_color", "unknown"),
+                        "confidence": float(par_attr.get("confidence", 0.0))
+                    },
                     "par_features": emb.get("par_features", []).tolist() if hasattr(emb.get("par_features"), "tolist") else emb.get("par_features", []),
                     "quality": float(emb.get("quality", 0.0)),
                     "metadata": emb.get("metadata", {})
                 })
+
+            if "par_profile" in ident:
+                payload["stable_par_profile"] = {
+                    "upper_color": str(ident["par_profile"].get("upper_color", "unknown")),
+                    "lower_color": str(ident["par_profile"].get("lower_color", "unknown")),
+                    "upper_votes": ident["par_profile"].get("upper_votes", {}),
+                    "lower_votes": ident["par_profile"].get("lower_votes", {}),
+                    "par_count": int(ident["par_profile"].get("par_count", 0))
+                }
                 
             points.append(
                 PointStruct(
@@ -177,6 +264,8 @@ class QdrantGallery:
                     payload=payload
                 )
             )
+            
+        self._export_par_profiles()
             
         # Do network I/O in a background thread to prevent blocking the video processing loop
         threading.Thread(target=self._do_network_upload, args=(old_point_ids, points), daemon=True).start()

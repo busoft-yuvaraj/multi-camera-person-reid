@@ -4,6 +4,7 @@ from app.violation.person_state import PersonStateManager
 from app.violation.route_policy import RoutePolicy
 from app.violation.evidence_manager import EvidenceManager
 from app.violation.violation_engine import ViolationEngine, ViolationEvent
+from app.violation.handwash_detector import HandwashDetector
 
 __all__ = [
     "LineCrossingDetector",
@@ -14,4 +15,5 @@ __all__ = [
     "EvidenceManager",
     "ViolationEngine",
     "ViolationEvent",
+    "HandwashDetector",
 ]

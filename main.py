@@ -90,10 +90,14 @@ def main():
             if not v_path:
                 v_path = config.get(f"{cam_id}_video", "")
             cameras_info.append({"camera_id": cam_id, "video_path": v_path})
+    elif "cameras" in config:
+        cameras_info = []
+        for cam_id, cam_item in config["cameras"].items():
+            cameras_info.append({"camera_id": cam_id, "video_path": cam_item.get("video_path", "")})
     else:
         cameras_info = [
-            {"camera_id": "cctv1", "video_path": config["cctv1_video"]},
-            {"camera_id": "cctv2", "video_path": config["cctv2_video"]}
+            {"camera_id": "cctv1", "video_path": config.get("cctv1_video", "")},
+            {"camera_id": "cctv2", "video_path": config.get("cctv2_video", "")}
         ]
     
     processor = MultiCameraProcessor(
