@@ -53,6 +53,11 @@ class GlobalMatcher:
                 vp = item.get("viewpoint", "UNKNOWN")
                 par_attr = item.get("par_attributes") or {}
                 par_feat = item.get("par_features")
+            elif hasattr(item, "embedding"):
+                emb = getattr(item, "embedding")
+                vp = getattr(item, "viewpoint", "UNKNOWN")
+                par_attr = getattr(item, "par_attributes", {}) or {}
+                par_feat = getattr(item, "par_features", None)
             else:
                 emb = item
                 vp = "UNKNOWN"

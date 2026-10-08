@@ -139,6 +139,15 @@ class GlobalGallery:
                     if par is None and emb_entry.get("par_features") is not None:
                         par = {"features": emb_entry.get("par_features")}
                     ident.add_embedding(vec, vp, q, cid, tid, frame_idx=f_id, par_data=par)
+                elif hasattr(emb_entry, "embedding"):
+                    vec = getattr(emb_entry, "embedding")
+                    vp = getattr(emb_entry, "viewpoint", "UNKNOWN")
+                    q = getattr(emb_entry, "quality", 0.8)
+                    cid = getattr(emb_entry, "camera_id", init_cam)
+                    tid = getattr(emb_entry, "track_id", init_tid)
+                    f_id = getattr(emb_entry, "frame_id", 0)
+                    par = getattr(emb_entry, "par_attributes", None)
+                    ident.add_embedding(vec, vp, q, cid, tid, frame_idx=f_id, par_data=par)
                 else:
                     ident.add_embedding(emb_entry, "UNKNOWN", 0.8, init_cam, init_tid)
                     
@@ -149,7 +158,15 @@ class GlobalGallery:
     def update_identity(self, gid: str, new_tracks: List[Dict[str, Any]], new_embeddings: List[Any], status=None) -> bool:
         with self.lock:
             if gid not in self.identities:
-                return False
+                init_cam = new_tracks[0].get("camera_id", "") if new_tracks else ""
+                init_tid = new_tracks[0].get("track_id", -1) if new_tracks else -1
+                ident = GlobalIdentity(gid, initial_camera=init_cam, initial_track_id=init_tid)
+                for t in new_tracks:
+                    if isinstance(t, dict) and "camera_id" in t:
+                        ident.cameras_seen.add(t["camera_id"])
+                        if t not in ident.tracks:
+                            ident.tracks.append(t)
+                self.identities[gid] = ident
                 
             ident = self.identities[gid]
             if not isinstance(ident, GlobalIdentity):
@@ -181,6 +198,15 @@ class GlobalGallery:
                     if par is None and emb_entry.get("par_features") is not None:
                         par = {"features": emb_entry.get("par_features")}
                     ident.add_embedding(vec, vp, q, cid, tid, frame_idx=f_id, par_data=par)
+                elif hasattr(emb_entry, "embedding"):
+                    vec = getattr(emb_entry, "embedding")
+                    vp = getattr(emb_entry, "viewpoint", "UNKNOWN")
+                    q = getattr(emb_entry, "quality", 0.8)
+                    cid = getattr(emb_entry, "camera_id", ident.last_camera)
+                    tid = getattr(emb_entry, "track_id", ident.last_track_id)
+                    f_id = getattr(emb_entry, "frame_id", 0)
+                    par = getattr(emb_entry, "par_attributes", None)
+                    ident.add_embedding(vec, vp, q, cid, tid, frame_idx=f_id, par_data=par)
                 else:
                     ident.add_embedding(emb_entry, "UNKNOWN", 0.8, ident.last_camera, ident.last_track_id)
                     
@@ -193,3 +219,35 @@ class GlobalGallery:
     def get_identities(self) -> Dict[str, Any]:
         with self.lock:
             return dict(self.identities)
+
+    def search_candidates(
+        self,
+        query_vector: Any,
+        candidate_gids: List[str],
+        top_k: int = 5
+    ) -> Dict[str, float]:
+        """
+        Candidate-restricted vector search for local gallery.
+        """
+        if not candidate_gids or query_vector is None:
+            return {}
+
+        import numpy as np
+        scores: Dict[str, float] = {}
+        with self.lock:
+            for gid in candidate_gids:
+                ident = self.identities.get(gid)
+                if not ident:
+                    continue
+                best_sim = 0.0
+                embs = ident.get_all_embeddings() if hasattr(ident, "get_all_embeddings") else ident.get("embeddings", [])
+                for emb_entry in embs:
+                    e_vec = emb_entry.get("embedding") if isinstance(emb_entry, dict) else emb_entry
+                    if e_vec is not None:
+                        dot = float(np.dot(query_vector, e_vec))
+                        norm = float((np.linalg.norm(query_vector) * np.linalg.norm(e_vec)) + 1e-8)
+                        sim = dot / norm
+                        best_sim = max(best_sim, sim)
+                if best_sim > 0.0:
+                    scores[gid] = best_sim
+        return scores

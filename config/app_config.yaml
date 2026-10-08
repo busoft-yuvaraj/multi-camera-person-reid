@@ -1,267 +1,231 @@
 # ============================================================
-# CAMERA INPUTS
+# PHASE 1: CAMERA & ZONE INPUTS
 # ============================================================
 
 cameras:
   waiting_lobby:
-    zone: waiting_lobby
-    video_path: "cctv_samples/hand/waiting_lobby.mp4"
+    camera_id: "waiting_lobby"
+    zone: "waiting_lobby"
+    video_path: "cctv_samples/waiting_lobby.mp4"
+    roi: {}
+    transitions:
+      lobby_exit:
+        enabled: true
+        type: "line"
+        points:
+          start: [420, 265]
+          end: [662, 265]
+        target_camera: "pantry"
+        target_zone: "pantry"
 
   pantry:
-    zone: pantry
-    video_path: "cctv_samples/hand/pantry.mp4"
+    camera_id: "pantry"
+    zone: "pantry"
+    video_path: "cctv_samples/pantry.mp4"
+    roi:
+      sink:
+        enabled: true
+        type: "polygon"
+        points:
+          - [31, 17]
+          - [530, 5]
+          - [546, 521]
+          - [49, 532]
+    transitions:
+      pantry_yellow:
+        enabled: true
+        type: "line"
+        points:
+          start: [523, 152]
+          end: [526, 417]
+        target_camera: "waiting_lobby"
+        target_zone: "waiting_lobby"
+      pantry_green:
+        enabled: true
+        type: "line"
+        points:
+          start: [65, 502]
+          end: [536, 490]
+        target_camera: "passage"
+        target_zone: "passage"
 
-  passage_1:
-    zone: passage_1
-    video_path: "cctv_samples/hand/passage1.mp4"
+  passage:
+    camera_id: "passage"
+    zone: "passage"
+    video_path: "cctv_samples/passage1.mp4"
+    roi: {}
+    transitions:
+      passage_transition:
+        enabled: true
+        type: "line"
+        points:
+          start: [550, 600]
+          end: [800, 600]
+        target_camera: "pantry"
+        target_zone: "pantry"
 
+# ============================================================
+# CAMERA TOPOLOGY & TRANSITION RULES
+# ============================================================
+
+topology:
+  pantry:
+    next_zones:
+      - waiting_lobby
+      - passage
+  waiting_lobby:
+    next_zones:
+      - pantry
+      - passage
+  passage:
+    next_zones:
+      - pantry
+      - waiting_lobby
+
+transition_rules:
+  - from_camera: "pantry"
+    transition: "pantry_yellow"
+    candidate_zones:
+      - "waiting_lobby"
+  - from_camera: "pantry"
+    transition: "pantry_green"
+    candidate_zones:
+      - "passage"
+  - from_camera: "waiting_lobby"
+    transition: "lobby_exit"
+    candidate_zones:
+      - "pantry"
+  - from_camera: "passage"
+    transition: "passage_transition"
+    candidate_zones:
+      - "pantry"
+
+# ============================================================
+# TEMPORAL CONSTRAINTS
+# ============================================================
+
+temporal_constraints:
+  pantry_to_waiting_lobby:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  waiting_lobby_to_pantry:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  pantry_to_passage:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  passage_to_pantry:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  waiting_lobby_to_passage:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  passage_to_waiting_lobby:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  same_camera_reacquisition_max_seconds: 10.0
 
 # ============================================================
 # DETECTION / TRACKING
 # ============================================================
 
 model_path: "yolo11n.pt"
-
 tracker_config: "botsort.yaml"
-
 imgsz: 960
-
 track_buffer: 200
 
-
 # ============================================================
-# REID
+# REID & EMBEDDING BANK
 # ============================================================
 
 reid_enabled: true
-
 reid_model_path: "osnet_x1_0"
-
-# Current value 3 is giving frequent evaluations.
-# Keep 3 for accuracy testing.
 reid_interval: 3
-
 min_reid_confidence: 0.35
-
 min_reid_width: 45
-
 min_reid_height: 90
-
 reid_min_quality: 0.45
-
 blur_threshold: 10.0
 
-
-# ============================================================
-# REID EMBEDDING BANK
-# ============================================================
-
 reid_similarity_threshold: 0.70
-
 reid_bank_size: 15
-
 embedding_diversity_threshold: 0.90
-
-reid_confirm_frames: 10
-
+reid_confirm_frames: 3
 
 # ============================================================
-# GLOBAL ID MATCHING (Modular Multi-Signal Scoring)
+# GLOBAL ID MATCHING & HYSTERESIS
 # ============================================================
 
 weight_reid: 0.60
 weight_par: 0.25
 weight_context: 0.15
 
-# Match and PENDING thresholds
 threshold_match: 0.80
 threshold_ambiguous: 0.68
 threshold_cross_view: 0.62
 threshold_recovery: 0.75
 reid_ambiguous_margin: 0.04
 
-# Evidence thresholds
-reid_confirm_frames: 5
-pending_confirm_frames: 5
-
-# Camera Transition Network
-camera_transitions:
-  waiting_lobby: ["pantry", "passage_1"]
-  pantry: ["waiting_lobby", "passage_1"]
-  passage_1: ["waiting_lobby", "pantry"]
-  cctv1: ["cctv2", "cctv3"]
-  cctv2: ["cctv1", "cctv3"]
-
-
-# ============================================================
-# NEW GLOBAL ID CREATION
-# ============================================================
-
-reid_new_id_confirm_frames: 25
-
-
-# ============================================================
-# GALLERY UPDATE (Quality Filter)
-# ============================================================
-
+pending_confirm_frames: 3
+reid_new_id_confirm_frames: 3
 gallery_update_min_quality: 0.60
 
-
-# ============================================================
-# HYSTERESIS / ID STABILITY
-# ============================================================
-
-# Once a person is identified, don't allow another GID
-# to replace it easily.
-
 hysteresis_switch_threshold: 0.92
-
 hysteresis_switch_margin: 0.12
-
 hysteresis_consecutive_frames: 10
 
+# Cooldown and debounce for transitions & ROIs
+transition_cooldown_frames: 15
+roi_debounce_frames: 3
 
 # ============================================================
-# MODELS
+# MODELS (PAR, POSE, ATTIRE)
 # ============================================================
 
 pose_model_path: "models/yolo11n-pose.pt"
-
 par_model_path: "models/mobilenet_par.pt"
-
 attire_model_path: "models/formal_attire_best.pt"
-
-
-# ============================================================
-# ATTIRE
-# ============================================================
-
-attire_detection_enabled: true
-
+attire_detection_enabled: false
 attire_conf_threshold: 0.40
-
 attire_interval: 5
 
-
 # ============================================================
-# QDRANT
+# QDRANT (Credentials loaded from .env)
 # ============================================================
-
-qdrant_url: "https://1971b925-dae4-4f42-b136-f0eea6fc8e13.us-east-1-1.aws.cloud.qdrant.io"
-
-qdrant_api_key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY2Nlc3MiOiJtIiwic3ViamVjdCI6ImFwaS1rZXk6NWIwYWI5ZjItMzE3Ny00YWJhLTk2NzQtYmY1NzQwMTc4YjA5In0.5U0LCA4aMVTNvoJIfmn6fTwj46d3BeI0zjwTpuwWvgo"
 
 qdrant_collection: "cctv-poc"
-
 clear_gallery_on_start: true
 
-
 # ============================================================
-# OUTPUT
+# OUTPUT & LOGS
 # ============================================================
 
 combined_output: "output/combined_output.mp4"
-
 enable_debug_logging: true
-
+journey_log_path: "logs/journey.jsonl"
+association_log_path: "logs/association_decisions.jsonl"
 
 # ============================================================
 # EXCLUSION ZONES
 # ============================================================
 
 exclusion_zones:
-
   waiting_lobby:
     - [0.70, 0.0, 1.0, 1.0]
 
-  cctv1:
-    - [0.70, 0.0, 1.0, 1.0]
-
-
 # ============================================================
-# HANDWASHING DETECTION
+# PHASE 2 MODULES (Disabled in Phase 1)
 # ============================================================
+
+phase1_mode: true
 
 handwashing:
-  enabled: true
+  enabled: false
   sink_model_path: "models/yolo11n(best).pt"
   hand_model_path: "models/yolo_11n(best).pt"
   step_model_path: "models/sink_model(best).pt"
-  sink_confidence: 0.30
-  hand_confidence: 0.40
-  step_confidence: 0.35
-  min_washing_duration: 5.0
-  detection_confirmation_frames: 3
-  reset_after_no_detection_seconds: 1.0
-  require_hand_movement: true
-  min_hand_movement: 2.0
-
-
-# ============================================================
-# VIOLATION DETECTION
-# ============================================================
 
 violation_detection:
-
-  enabled: true
-
-  cameras:
-
-    waiting_lobby:
-
-      zone: waiting_lobby
-
-      pathway: exit
-
-      video_path: "cctv_samples/hand/waiting_lobby.mp4"
-
-      line:
-
-        enabled: true
-
-        start: [420, 265]
-
-        end: [662, 265]
-
-        color: [0, 0, 255]
-
-
-    pantry:
-
-      zone: pantry
-
-      pathway: pantry
-
-      video_path: "cctv_samples/hand/pantry.mp4"
-
-      line:
-
-        enabled: false
-
-
-    passage_1:
-
-      zone: passage_1
-
-      pathway: passage_1
-
-      video_path: "cctv_samples/hand/passage1.mp4"
-
-      line:
-
-        enabled: true
-
-        start: [550, 600]
-
-        end: [800, 600]
-
-
+  enabled: false
   evidence:
-
-    enabled: true
-
-    output_dir: "output/violations"
-
-    save_image: true
-
-    save_metadata: true
+    enabled: false

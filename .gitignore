@@ -27,6 +27,10 @@ test_images/
 # OS specific
 .DS_Store
 
+# Secrets & Environment
+.env
+*.env
+
 # Documentation / Plans
 implementation_plan.txt
 implementation_plan.md

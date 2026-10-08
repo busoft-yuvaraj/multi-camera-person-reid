@@ -1,0 +1,231 @@
+# ============================================================
+# PHASE 1 CONFIGURATION: NEW SAMPLES (cctv_samples/new/)
+# ============================================================
+
+cameras:
+  waiting_lobby:
+    camera_id: "waiting_lobby"
+    zone: "waiting_lobby"
+    video_path: "cctv_samples/new/waiting_lobby.mp4"
+    roi: {}
+    transitions:
+      lobby_exit:
+        enabled: true
+        type: "line"
+        points:
+          start: [420, 265]
+          end: [662, 265]
+        target_camera: "pantry"
+        target_zone: "pantry"
+
+  pantry:
+    camera_id: "pantry"
+    zone: "pantry"
+    video_path: "cctv_samples/new/pantry.mp4"
+    roi:
+      sink:
+        enabled: true
+        type: "polygon"
+        points:
+          - [31, 17]
+          - [530, 5]
+          - [546, 521]
+          - [49, 532]
+    transitions:
+      pantry_yellow:
+        enabled: true
+        type: "line"
+        points:
+          start: [523, 152]
+          end: [526, 417]
+        target_camera: "waiting_lobby"
+        target_zone: "waiting_lobby"
+      pantry_green:
+        enabled: true
+        type: "line"
+        points:
+          start: [65, 502]
+          end: [536, 490]
+        target_camera: "passage"
+        target_zone: "passage"
+
+  passage:
+    camera_id: "passage"
+    zone: "passage"
+    video_path: "cctv_samples/new/passage1.mp4"
+    roi: {}
+    transitions:
+      passage_transition:
+        enabled: true
+        type: "line"
+        points:
+          start: [550, 600]
+          end: [800, 600]
+        target_camera: "pantry"
+        target_zone: "pantry"
+
+# ============================================================
+# CAMERA TOPOLOGY & TRANSITION RULES
+# ============================================================
+
+topology:
+  pantry:
+    next_zones:
+      - waiting_lobby
+      - passage
+  waiting_lobby:
+    next_zones:
+      - pantry
+      - passage
+  passage:
+    next_zones:
+      - pantry
+      - waiting_lobby
+
+transition_rules:
+  - from_camera: "pantry"
+    transition: "pantry_yellow"
+    candidate_zones:
+      - "waiting_lobby"
+  - from_camera: "pantry"
+    transition: "pantry_green"
+    candidate_zones:
+      - "passage"
+  - from_camera: "waiting_lobby"
+    transition: "lobby_exit"
+    candidate_zones:
+      - "pantry"
+  - from_camera: "passage"
+    transition: "passage_transition"
+    candidate_zones:
+      - "pantry"
+
+# ============================================================
+# TEMPORAL CONSTRAINTS
+# ============================================================
+
+temporal_constraints:
+  pantry_to_waiting_lobby:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  waiting_lobby_to_pantry:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  pantry_to_passage:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  passage_to_pantry:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  waiting_lobby_to_passage:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  passage_to_waiting_lobby:
+    min_seconds: 0.5
+    max_seconds: 15.0
+  same_camera_reacquisition_max_seconds: 10.0
+
+# ============================================================
+# DETECTION / TRACKING
+# ============================================================
+
+model_path: "yolo11n.pt"
+tracker_config: "botsort.yaml"
+imgsz: 960
+track_buffer: 200
+
+# ============================================================
+# REID & EMBEDDING BANK
+# ============================================================
+
+reid_enabled: true
+reid_model_path: "osnet_x1_0"
+reid_interval: 3
+min_reid_confidence: 0.35
+min_reid_width: 45
+min_reid_height: 90
+reid_min_quality: 0.45
+blur_threshold: 10.0
+
+reid_similarity_threshold: 0.70
+reid_bank_size: 15
+embedding_diversity_threshold: 0.90
+reid_confirm_frames: 3
+
+# ============================================================
+# GLOBAL ID MATCHING & HYSTERESIS
+# ============================================================
+
+weight_reid: 0.60
+weight_par: 0.25
+weight_context: 0.15
+
+threshold_match: 0.80
+threshold_ambiguous: 0.68
+threshold_cross_view: 0.62
+threshold_recovery: 0.75
+reid_ambiguous_margin: 0.04
+
+pending_confirm_frames: 3
+reid_new_id_confirm_frames: 3
+gallery_update_min_quality: 0.60
+
+hysteresis_switch_threshold: 0.92
+hysteresis_switch_margin: 0.12
+hysteresis_consecutive_frames: 10
+
+# Cooldown and debounce for transitions & ROIs
+transition_cooldown_frames: 15
+roi_debounce_frames: 3
+
+# ============================================================
+# MODELS (PAR, POSE, ATTIRE)
+# ============================================================
+
+pose_model_path: "models/yolo11n-pose.pt"
+par_model_path: "models/mobilenet_par.pt"
+attire_model_path: "models/formal_attire_best.pt"
+attire_detection_enabled: false
+attire_conf_threshold: 0.40
+attire_interval: 5
+
+# ============================================================
+# QDRANT (Credentials loaded from .env)
+# ============================================================
+
+qdrant_collection: "cctv-poc"
+clear_gallery_on_start: true
+
+# ============================================================
+# OUTPUT & LOGS
+# ============================================================
+
+combined_output: "output/combined_output_new.mp4"
+enable_debug_logging: true
+journey_log_path: "logs/journey.jsonl"
+association_log_path: "logs/association_decisions.jsonl"
+
+# ============================================================
+# EXCLUSION ZONES
+# ============================================================
+
+exclusion_zones:
+  waiting_lobby:
+    - [0.70, 0.0, 1.0, 1.0]
+
+# ============================================================
+# PHASE 2 MODULES (Disabled in Phase 1)
+# ============================================================
+
+phase1_mode: true
+
+handwashing:
+  enabled: false
+  sink_model_path: "models/yolo11n(best).pt"
+  hand_model_path: "models/yolo_11n(best).pt"
+  step_model_path: "models/sink_model(best).pt"
+
+violation_detection:
+  enabled: false
+  evidence:
+    enabled: false

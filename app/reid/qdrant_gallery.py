@@ -3,7 +3,10 @@ import json
 import logging
 import threading
 import uuid
+import numpy as np
+from typing import List, Dict, Optional, Any, Tuple
 from qdrant_client import QdrantClient
+from qdrant_client.http import models
 from qdrant_client.http.models import Distance, VectorParams, PointStruct
 
 class QdrantGallery:
@@ -225,8 +228,14 @@ class QdrantGallery:
             ident["point_ids"].append(point_id)
             
             vector = emb["embedding"] if isinstance(emb, dict) else emb
+            meta = emb.get("metadata", {}) if isinstance(emb, dict) else {}
+            last_track = ident["tracks"][-1] if ident.get("tracks") else {}
             payload = {
                 "global_id": gid,
+                "camera_id": meta.get("camera_id", last_track.get("camera_id", "")),
+                "zone": meta.get("zone", last_track.get("zone", last_track.get("camera_id", ""))),
+                "local_track_id": meta.get("track_id", last_track.get("track_id", -1)),
+                "timestamp": meta.get("timestamp", 0.0),
                 "tracks": ident["tracks"],
                 "cameras_seen": list(ident["cameras_seen"]),
                 "status": ident["status"]
@@ -245,7 +254,7 @@ class QdrantGallery:
                     },
                     "par_features": emb.get("par_features", []).tolist() if hasattr(emb.get("par_features"), "tolist") else emb.get("par_features", []),
                     "quality": float(emb.get("quality", 0.0)),
-                    "metadata": emb.get("metadata", {})
+                    "metadata": meta
                 })
 
             if "par_profile" in ident:
@@ -288,3 +297,63 @@ class QdrantGallery:
     def get_identities(self):
         with self.lock:
             return dict(self.identities)
+
+    def search_candidates(
+        self,
+        query_vector: np.ndarray,
+        candidate_gids: List[str],
+        top_k: int = 5
+    ) -> Dict[str, float]:
+        """
+        Candidate-restricted vector search in Qdrant (Phase 1).
+        Only searches across valid candidate Global IDs (as filtered by Topology,
+        Temporal, and Spatial gating).
+        Returns:
+            Dict[global_id -> max_similarity_score]
+        """
+        if not candidate_gids or query_vector is None:
+            return {}
+
+        vec = query_vector.tolist() if hasattr(query_vector, "tolist") else list(query_vector)
+        scores: Dict[str, float] = {}
+
+        try:
+            query_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="global_id",
+                        match=models.MatchAny(any=candidate_gids)
+                    )
+                ]
+            )
+            results = self.client.search(
+                collection_name=self.collection_name,
+                query_vector=vec,
+                query_filter=query_filter,
+                limit=top_k * len(candidate_gids),
+                with_payload=True
+            )
+            for res in results:
+                gid = res.payload.get("global_id")
+                sim = float(res.score)
+                if gid:
+                    scores[gid] = max(scores.get(gid, 0.0), sim)
+        except Exception as e:
+            logging.debug(f"[QDRANT] Direct search error ({e}), falling back to candidate-restricted in-memory evaluation")
+            with self.lock:
+                for gid in candidate_gids:
+                    ident = self.identities.get(gid)
+                    if not ident:
+                        continue
+                    best_sim = 0.0
+                    for emb_entry in ident.get("embeddings", []):
+                        e_vec = emb_entry.get("embedding") if isinstance(emb_entry, dict) else emb_entry
+                        if e_vec is not None:
+                            dot = float(np.dot(query_vector, e_vec))
+                            norm = float((np.linalg.norm(query_vector) * np.linalg.norm(e_vec)) + 1e-8)
+                            sim = dot / norm
+                            best_sim = max(best_sim, sim)
+                    if best_sim > 0.0:
+                        scores[gid] = best_sim
+
+        return scores

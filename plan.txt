@@ -1,0 +1,1937 @@
+# PHASE 1 IMPLEMENTATION PLAN
+# Floor-Plan-Aware Multi-Camera Global ID Tracking
+
+Repository:
+https://github.com/busoft-yuvaraj/multi-camera-person-reid
+
+============================================================
+OBJECTIVE
+============================================================
+
+Implement PHASE 1 of the multi-camera tracking system.
+
+The ONLY objective of Phase 1 is:
+
+    Maintain a stable Global ID for a person across:
+    
+
+        PANTRY
+        PASSAGE
+        WAITING LOBBY / ENTRY-EXIT
+
+using:
+
+    1. Local tracking
+    2. Camera/zone information
+    3. Spatial information
+    4. Transition events
+    5. Temporal/journey information
+    6. Qdrant-based ReID search
+    7. OSNet embeddings
+    8. Existing PAR/Pose information where already available
+    9. Multi-frame confirmation
+
+Phase 1 MUST NOT implement violation/non-violation logic.
+
+Phase 1 MUST NOT determine whether the person actually washed
+their hands.
+
+Phase 1 MUST only collect the events and journey metadata required
+for Phase 2.
+
+============================================================
+IMPORTANT EXISTING CODE
+============================================================
+
+First inspect the entire existing repository before modifying it.
+
+Do NOT rewrite the existing architecture unnecessarily.
+
+Reuse existing implementations where possible.
+
+Important existing components include:
+
+    YOLO detection
+    BoT-SORT tracking
+    OSNet ReID
+    EmbeddingBank
+    viewpoint-aware embeddings
+    PAR extractor
+    Pose extractor
+    GlobalMatcher
+    QdrantGallery
+    hysteresis / pending matching
+    delayed NEW-ID creation
+    multi-camera processor
+
+The existing implementation already has useful ReID functionality.
+
+The goal is to ADD a spatial-temporal association layer around
+the existing ReID system, not replace the existing ReID system.
+
+============================================================
+CRITICAL ARCHITECTURAL CHANGE
+============================================================
+
+CURRENT CONCEPT:
+
+    New track
+        ↓
+    ReID comparison
+        ↓
+    Global ID
+
+NEW CONCEPT:
+
+    New local track
+        ↓
+    Identify camera
+        ↓
+    Identify logical zone
+        ↓
+    Detect transition/ROI events
+        ↓
+    Find spatially possible Global IDs
+        ↓
+    Find temporally possible Global IDs
+        ↓
+    Apply camera topology constraints
+        ↓
+    Query Qdrant ONLY for valid candidate Global IDs
+        ↓
+    ReID / PAR / Pose comparison
+        ↓
+    Multi-frame confirmation
+        ↓
+    Global ID assignment
+        ↓
+    Update journey metadata
+
+DO NOT compare every new person against every Global ID.
+
+Spatial + temporal + topology information must reduce the
+candidate set BEFORE ReID matching.
+
+============================================================
+1. FLOOR PLAN
+============================================================
+
+There are three logical zones:
+
+    PANTRY
+    PASSAGE
+    WAITING_LOBBY
+
+Floor-plan relationship:
+
+    WAITING LOBBY / ENTRY-EXIT
+              |
+              |
+           PANTRY
+              |
+              |
+           PASSAGE
+
+The physical layout allows movement in multiple directions.
+
+Do NOT assume a single fixed direction.
+
+The topology must be configurable.
+
+============================================================
+2. CAMERA CONFIGURATION
+============================================================
+
+Create a central camera configuration.
+
+Do NOT hard-code camera relationships or pixel coordinates
+inside Python code.
+
+Use:
+
+    config/app_config.yaml
+
+Structure:
+
+cameras:
+
+  pantry:
+
+    camera_id: "pantry"
+
+    zone: "pantry"
+
+    video_path: "cctv_samples/pantry.mp4"
+
+    roi:
+
+      sink:
+        enabled: true
+        type: "polygon"
+        points: []
+
+    transitions:
+
+      pantry_yellow:
+        enabled: true
+        type: "line"
+        points: []
+
+      pantry_green:
+        enabled: true
+        type: "line"
+        points: []
+
+
+  waiting_lobby:
+
+    camera_id: "waiting_lobby"
+
+    zone: "waiting_lobby"
+
+    video_path: "cctv_samples/waiting_lobby.mp4"
+
+    roi: {}
+
+    transitions:
+
+      lobby_exit:
+        enabled: true
+        type: "line"
+        points: []
+
+
+  passage:
+
+    camera_id: "passage"
+
+    zone: "passage"
+
+    video_path: "cctv_samples/passage.mp4"
+
+    roi: {}
+
+    transitions:
+
+      passage_transition:
+        enabled: true
+        type: "line"
+        points: []
+
+============================================================
+3. PANTRY ROI
+============================================================
+
+VERY IMPORTANT:
+
+For Phase 1, the Pantry camera should use ONLY the previously
+marked SINK AREA as the meaningful ROI.
+
+Do NOT use the entire Pantry as the handwashing ROI.
+
+The Pantry configuration must contain:
+
+    pantry.sink
+
+The system should detect:
+
+    ROI_ENTER
+    ROI_EXIT
+
+Example:
+
+{
+    "event": "ROI_ENTER",
+    "camera_id": "pantry",
+    "roi_id": "sink",
+    "local_track_id": 8,
+    "timestamp": 124.5
+}
+
+IMPORTANT:
+
+Do NOT convert ROI entry into a handwashing decision.
+
+DO NOT create:
+
+    handwash = true
+    handwash = false
+
+Phase 1 only records:
+
+    person entered sink ROI
+    person exited sink ROI
+
+Handwashing interpretation belongs to Phase 2.
+
+============================================================
+4. TRANSITION LINES
+============================================================
+
+Current transition areas:
+
+PANTRY:
+
+    pantry_yellow
+    pantry_green
+
+WAITING LOBBY:
+
+    lobby_exit
+
+PASSAGE:
+
+    passage_transition
+
+Each transition must generate an event when a tracked person
+crosses the line.
+
+Use the bottom-center point of the person's bounding box.
+
+Example:
+
+bbox = (x1, y1, x2, y2)
+
+foot_point:
+
+    x = (x1 + x2) / 2
+    y = y2
+
+Determine:
+
+    previous side of line
+    current side of line
+
+A transition event occurs when the person actually moves from
+one side to the other.
+
+DO NOT trigger a transition from a single noisy frame.
+
+Use:
+
+    multi-frame confirmation
+    minimum movement
+    debounce/cooldown
+
+Example event:
+
+{
+    "event": "TRANSITION_CROSSED",
+
+    "global_id": "Person_012",
+
+    "camera_id": "pantry",
+
+    "zone": "pantry",
+
+    "local_track_id": 8,
+
+    "transition_id": "pantry_yellow",
+
+    "timestamp": 124.52,
+
+    "direction": "A_TO_B"
+}
+
+============================================================
+5. CAMERA TOPOLOGY
+============================================================
+
+Create a configurable topology.
+
+Example:
+
+topology:
+
+  pantry:
+    next_zones:
+      - waiting_lobby
+      - passage
+
+  waiting_lobby:
+    next_zones:
+      - pantry
+      - passage
+
+  passage:
+    next_zones:
+      - pantry
+      - waiting_lobby
+
+Do not hard-code these relationships in the matcher.
+
+The topology exists to reject impossible candidate Global IDs.
+
+Later, transition-specific topology can be added.
+
+Example:
+
+transition_rules:
+
+  - from_camera: "pantry"
+    transition: "pantry_yellow"
+    candidate_zones:
+      - "waiting_lobby"
+
+  - from_camera: "pantry"
+    transition: "pantry_green"
+    candidate_zones:
+      - "passage"
+
+The architecture must support this even if the exact mapping
+is tuned later using the actual CCTV videos.
+
+============================================================
+6. GLOBAL ID STATE
+============================================================
+
+Create a GlobalIdentityState model.
+
+It must contain:
+
+    global_id
+
+    current_camera
+    current_zone
+    current_local_track_id
+
+    previous_camera
+    previous_zone
+
+    first_seen_timestamp
+    last_seen_timestamp
+
+    last_transition_id
+    last_transition_timestamp
+    last_transition_direction
+
+    status
+
+    journey_history
+
+    embedding references / identity information
+
+Possible states:
+
+    NEW
+    PENDING
+    CONFIRMED
+    ACTIVE
+    TEMPORARILY_LOST
+    REACQUIRABLE
+    EXPIRED
+
+Do NOT delete a Global ID immediately when its local track
+disappears.
+
+Keep the identity temporarily available for reacquisition.
+
+============================================================
+7. GLOBAL ID JOURNEY
+============================================================
+
+Every Global ID must maintain chronological journey history.
+
+Example:
+
+Global ID 12:
+
+13:07:10
+    camera = waiting_lobby
+    event = TRACK_STARTED
+
+13:07:14
+    camera = pantry
+    event = CAMERA_APPEARED
+
+13:07:18
+    camera = pantry
+    roi = sink
+    event = ROI_ENTER
+
+13:07:25
+    camera = pantry
+    roi = sink
+    event = ROI_EXIT
+
+13:07:30
+    camera = pantry
+    transition = pantry_yellow
+    event = TRANSITION_CROSSED
+
+13:07:32
+    camera = passage
+    event = CAMERA_APPEARED
+
+The journey history is the main Phase 1 output.
+
+============================================================
+8. REQUIRED JOURNEY EVENTS
+============================================================
+
+Support:
+
+    TRACK_STARTED
+
+    CAMERA_APPEARED
+
+    CAMERA_DISAPPEARED
+
+    ROI_ENTER
+
+    ROI_EXIT
+
+    TRANSITION_CROSSED
+
+    GLOBAL_ID_CONFIRMED
+
+    GLOBAL_ID_REACQUIRED
+
+    GLOBAL_ID_LOST
+
+    GLOBAL_ID_EXPIRED
+
+    ASSOCIATION_DECISION
+
+Do not implement compliance interpretation.
+
+============================================================
+9. LAST-SEEN METADATA
+============================================================
+
+Every Global ID must maintain:
+
+    global_id
+
+    current_camera
+
+    current_zone
+
+    current_local_track_id
+
+    previous_camera
+
+    previous_zone
+
+    last_seen_timestamp
+
+    last_transition_id
+
+    last_transition_timestamp
+
+    last_transition_direction
+
+    time_since_last_seen
+
+Example:
+
+{
+    "global_id": "Person_012",
+
+    "current_camera": "passage",
+    "current_zone": "passage",
+    "current_local_track_id": 4,
+
+    "previous_camera": "pantry",
+    "previous_zone": "pantry",
+
+    "last_seen_timestamp": 126.2,
+
+    "last_transition_id": "pantry_yellow",
+
+    "last_transition_timestamp": 124.5,
+
+    "time_since_last_seen": 1.7
+}
+
+============================================================
+10. TEMPORAL GATING
+============================================================
+
+Add configurable temporal constraints.
+
+Example:
+
+temporal_constraints:
+
+  pantry_to_waiting_lobby:
+    min_seconds: 0.5
+    max_seconds: 15.0
+
+  waiting_lobby_to_pantry:
+    min_seconds: 0.5
+    max_seconds: 15.0
+
+  pantry_to_passage:
+    min_seconds: 0.5
+    max_seconds: 15.0
+
+  passage_to_pantry:
+    min_seconds: 0.5
+    max_seconds: 15.0
+
+  waiting_lobby_to_passage:
+    min_seconds: 0.5
+    max_seconds: 15.0
+
+  passage_to_waiting_lobby:
+    min_seconds: 0.5
+    max_seconds: 15.0
+
+These values are initial values only.
+
+They must be tuned against the real CCTV videos.
+
+Do NOT hard-code them.
+
+Example:
+
+Global ID 12:
+
+    last_seen_camera = pantry
+    last_seen_timestamp = 100.0
+
+New person:
+
+    camera = passage
+    timestamp = 104.0
+
+delta = 4 seconds
+
+If Pantry -> Passage allows 0.5-15 seconds:
+
+    temporally valid
+
+If delta = 60 seconds:
+
+    reject or heavily penalize the candidate.
+
+============================================================
+11. SPATIAL GATING
+============================================================
+
+Before ReID:
+
+Determine whether a Global ID is spatially compatible.
+
+Use:
+
+    current camera
+    current zone
+    previous camera
+    previous zone
+    transition crossed
+    transition direction
+
+Example:
+
+New track:
+
+    camera = passage
+
+Candidate:
+
+    G12
+    last camera = pantry
+    last transition = pantry_yellow
+
+If Pantry -> Passage is valid:
+
+    G12 = spatial candidate
+
+Candidate:
+
+    G50
+    last camera = unrelated zone
+
+If topology says the transition is impossible:
+
+    G50 = reject
+
+============================================================
+12. CANDIDATE GENERATION
+============================================================
+
+Create:
+
+    CandidateManager
+
+Pipeline:
+
+NEW LOCAL TRACK
+        |
+        v
+CURRENT CAMERA
+        |
+        v
+CURRENT ZONE
+        |
+        v
+SPATIAL FILTER
+        |
+        v
+TEMPORAL FILTER
+        |
+        v
+TOPOLOGY FILTER
+        |
+        v
+VALID GLOBAL IDs
+        |
+        v
+QDRANT SEARCH
+
+The system must NOT search Qdrant against every Global ID.
+
+============================================================
+13. QDRANT
+============================================================
+
+The existing repository already has Qdrant gallery support.
+
+Reuse it.
+
+However, change its role.
+
+CURRENT:
+
+    Qdrant mainly stores embeddings
+    Python loads identities
+    Python loops through identities
+    Python calculates similarity
+
+NEW:
+
+    Qdrant performs candidate-restricted vector search.
+
+Pipeline:
+
+    spatial/temporal candidate IDs
+            |
+            v
+    Qdrant filtered vector search
+            |
+            v
+    top-K embedding matches
+            |
+            v
+    group results by global_id
+            |
+            v
+    identity-level ReID score
+
+Example:
+
+Candidate Global IDs:
+
+    [G12, G18, G21]
+
+Qdrant should search only those identities.
+
+Do NOT search all identities.
+
+============================================================
+14. QDRANT PAYLOAD
+============================================================
+
+Each embedding point should contain payload similar to:
+
+{
+    "global_id": "Person_012",
+
+    "camera_id": "pantry",
+
+    "zone": "pantry",
+
+    "local_track_id": 8,
+
+    "viewpoint": "BACK",
+
+    "quality": 0.81,
+
+    "timestamp": 124.5
+}
+
+Do NOT store the complete journey inside every Qdrant vector.
+
+Qdrant = identity/vector evidence.
+
+Journey store = temporal/event history.
+
+============================================================
+15. QDRANT COLLECTION
+============================================================
+
+Continue using cosine similarity.
+
+Embedding dimension must match the OSNet model.
+
+Do not change the dimension unless the ReID model changes.
+
+Use configurable:
+
+    collection_name
+
+    top_k
+
+    similarity threshold
+
+    candidate filter
+
+    viewpoint filter if appropriate
+
+Do not hard-code Qdrant credentials.
+
+Use environment variables:
+
+    QDRANT_URL
+    QDRANT_API_KEY
+
+If credentials are currently present in the repository:
+
+    rotate/revoke the exposed credential
+    remove it from configuration
+    move it to environment variables
+    add .env to .gitignore
+
+============================================================
+16. EXISTING REID EMBEDDING BANK
+============================================================
+
+Reuse the existing EmbeddingBank.
+
+Continue supporting:
+
+    FRONT
+    BACK
+    SIDE
+    UNKNOWN
+
+Continue diversity filtering.
+
+Do not store every frame.
+
+Maintain a bounded embedding bank.
+
+Example:
+
+Global ID 12:
+
+    FRONT embeddings
+    SIDE embeddings
+    BACK embeddings
+
+This is important because:
+
+    Pantry may see mostly BACK
+
+    Waiting Lobby may see FRONT/SIDE
+
+    Passage may see mixed viewpoints
+
+Do not force a single embedding to represent the entire person.
+
+============================================================
+17. REID MATCHING
+============================================================
+
+ReID should be used AFTER candidate filtering.
+
+Example:
+
+Spatial candidates:
+
+    G12
+    G18
+
+Temporal candidates:
+
+    G12
+    G18
+
+Qdrant:
+
+    G12 = 0.78
+    G18 = 0.61
+
+Then:
+
+    G12 = candidate match
+
+Do not let a Global ID with a high ReID score bypass
+spatial/temporal constraints.
+
+Example:
+
+    G99 ReID = 0.91
+
+but:
+
+    G99 was last seen in an impossible camera/location
+
+Then:
+
+    G99 MUST NOT be selected.
+
+============================================================
+18. PAR AND POSE
+============================================================
+
+Reuse existing PAR/Pose implementation where useful.
+
+However:
+
+DO NOT make Phase 1 dependent on PAR/Pose for every association.
+
+Primary Phase 1 evidence:
+
+    spatial
+    temporal
+    topology
+    ReID
+
+PAR/Pose can be supporting evidence where already available.
+
+Do not add unnecessary computation to the pipeline.
+
+============================================================
+19. ASSOCIATION DECISION
+============================================================
+
+Create:
+
+    AssociationManager
+
+Responsibilities:
+
+    candidate generation
+    spatial gating
+    temporal gating
+    topology gating
+    Qdrant search
+    ReID comparison
+    confirmation
+    Global ID assignment
+    journey update
+
+Decision flow:
+
+NEW LOCAL TRACK
+        |
+        v
+VALID SPATIAL CANDIDATES?
+        |
+       NO
+        |
+        v
+Create/keep NEW or UNKNOWN candidate
+
+       YES
+        |
+        v
+TEMPORALLY VALID?
+        |
+       NO
+        |
+        v
+Reject candidate
+
+       YES
+        |
+        v
+QDRANT SEARCH
+        |
+        v
+REID SCORE
+        |
+        v
+CONFIDENCE CHECK
+        |
+        v
+MULTI-FRAME CONFIRMATION
+        |
+        v
+ASSIGN GLOBAL ID
+
+============================================================
+20. PENDING / AMBIGUOUS
+============================================================
+
+Do NOT immediately assign a Global ID when evidence is weak.
+
+Use:
+
+    PENDING
+    AMBIGUOUS
+
+Example:
+
+    G12 = 0.67
+    G18 = 0.65
+
+Difference is too small.
+
+Result:
+
+    PENDING
+
+Wait for additional evidence:
+
+    next frame
+    better ReID crop
+    transition event
+    stronger temporal evidence
+    stronger spatial evidence
+
+Only confirm when sufficient evidence exists.
+
+============================================================
+21. EXISTING HYSTERESIS
+============================================================
+
+Reuse the existing hysteresis logic.
+
+Do not remove it.
+
+But integrate it AFTER spatial/temporal candidate filtering.
+
+New logic:
+
+    Spatial/Temporal candidate
+        ↓
+    Qdrant/ReID
+        ↓
+    candidate score
+        ↓
+    hysteresis
+        ↓
+    confirmation
+        ↓
+    Global ID
+
+Do not allow a single frame to cause a Global ID switch.
+
+============================================================
+22. GLOBAL ID SWITCHING
+============================================================
+
+This is one of the most important requirements.
+
+Once a Global ID is CONFIRMED:
+
+DO NOT immediately switch it because another ReID candidate
+has a slightly higher score.
+
+A switch should require:
+
+    strong ReID evidence
+    AND
+    valid spatial transition
+    AND
+    valid temporal relationship
+    AND
+    multi-frame confirmation
+
+If evidence is ambiguous:
+
+    keep existing Global ID
+    mark association as uncertain
+    wait for more evidence
+
+Protect journey integrity.
+
+============================================================
+23. GLOBAL ID REACQUISITION
+============================================================
+
+When a local track disappears:
+
+DO NOT immediately create a new Global ID.
+
+Example:
+
+G12:
+
+    last camera = pantry
+    last seen = 100 sec
+
+Track disappears.
+
+State:
+
+    TEMPORARILY_LOST
+
+New track:
+
+    camera = passage
+    timestamp = 104 sec
+
+If:
+
+    topology valid
+    temporal window valid
+    Qdrant/ReID similarity valid
+
+then:
+
+    REACQUIRE G12
+
+not:
+
+    create G13
+
+============================================================
+24. GLOBAL ID CONFLICT DETECTION
+============================================================
+
+Detect impossible simultaneous assignments.
+
+Example:
+
+G12 assigned to:
+
+    Pantry Track 4
+
+AND
+
+    Passage Track 9
+
+at the same time.
+
+This must generate:
+
+    GLOBAL_ID_CONFLICT
+
+Do not silently overwrite.
+
+Log:
+
+    global_id
+    camera 1
+    track 1
+    camera 2
+    track 2
+    timestamps
+    reason
+
+============================================================
+25. JOURNEY MANAGER
+============================================================
+
+Create:
+
+    app/journey/
+
+Suggested files:
+
+    models.py
+    journey_manager.py
+    journey_store.py
+
+Responsibilities:
+
+    create journey
+    append events
+    update current location
+    update previous location
+    update last seen
+    update transition metadata
+    calculate elapsed time
+    maintain Global ID state
+
+Example:
+
+Global ID 12:
+
+    WAITING_LOBBY
+        |
+        | 2.4 sec
+        v
+    PANTRY
+        |
+        | 3.2 sec
+        v
+    SINK ROI
+        |
+        | 5.8 sec
+        v
+    PANTRY TRANSITION
+        |
+        | 1.7 sec
+        v
+    PASSAGE
+
+This journey is the primary Phase 1 output.
+
+============================================================
+26. JOURNEY STORAGE
+============================================================
+
+For Phase 1, use a simple structured event store.
+
+Recommended:
+
+    JSONL
+
+Example:
+
+    logs/journey.jsonl
+
+Each line:
+
+{
+    "timestamp": 125.42,
+    "global_id": "Person_012",
+    "camera_id": "pantry",
+    "zone": "pantry",
+    "event": "TRANSITION_CROSSED",
+    "transition_id": "pantry_yellow",
+    "local_track_id": 8
+}
+
+Keep the storage implementation abstract so it can later be
+changed to PostgreSQL/Redis/etc.
+
+============================================================
+27. DIAGNOSTIC ASSOCIATION LOG
+============================================================
+
+Every Global ID association decision must be explainable.
+
+Example:
+
+{
+    "timestamp": 123.45,
+
+    "new_camera": "passage",
+
+    "local_track_id": 7,
+
+    "candidate_global_ids": [
+        "Person_012",
+        "Person_018"
+    ],
+
+    "spatial_candidates": [
+        "Person_012",
+        "Person_018"
+    ],
+
+    "temporal_candidates": [
+        "Person_012"
+    ],
+
+    "last_camera": "pantry",
+
+    "last_transition": "pantry_yellow",
+
+    "time_since_last_seen": 2.1,
+
+    "qdrant_scores": {
+        "Person_012": 0.74
+    },
+
+    "selected_global_id": "Person_012",
+
+    "decision": "CONFIRMED",
+
+    "reason": "SPATIAL + TEMPORAL + REID"
+}
+
+The system must make it possible to answer:
+
+    Why was this track assigned Global ID 12?
+
+============================================================
+28. VISUAL DEBUGGING
+============================================================
+
+Annotated output must show:
+
+    Camera
+    Zone
+    Local Track ID
+    Global ID
+    Association state
+    ReID score
+    Last transition
+    Current ROI
+    Journey state
+
+Example:
+
+    G12 | L7
+    CAMERA: PANTRY
+    ZONE: PANTRY
+    STATE: CONFIRMED
+    LAST: pantry_yellow
+
+For ambiguous:
+
+    G?
+    STATE: PENDING
+    CANDIDATES: G12 / G18
+
+Draw configured ROI and transition lines on the output.
+
+============================================================
+29. PROPOSED CODE STRUCTURE
+============================================================
+
+Reuse existing code wherever possible.
+
+Potential additions:
+
+app/
+│
+├── association/
+│   ├── candidate_filter.py
+│   ├── spatial_gate.py
+│   ├── temporal_gate.py
+│   ├── topology.py
+│   └── association_manager.py
+│
+├── journey/
+│   ├── models.py
+│   ├── journey_manager.py
+│   └── journey_store.py
+│
+└── events/
+    ├── transition_detector.py
+    └── roi_detector.py
+
+Potential modifications:
+
+    config/app_config.yaml
+
+    main.py
+
+    app/multi_camera_processor.py
+
+    app/reid/matcher.py
+
+    app/reid/qdrant_gallery.py
+
+IMPORTANT:
+
+Before creating any of these files, inspect the repository.
+
+If equivalent modules already exist:
+
+    reuse them
+    extend them
+    do not create duplicates
+
+============================================================
+30. RESPONSIBILITY SEPARATION
+============================================================
+
+YOLO:
+
+    person detection
+
+BoT-SORT:
+
+    local camera tracking
+
+Spatial ROI:
+
+    zone/ROI events
+
+Transition detector:
+
+    transition events
+
+Topology:
+
+    physically possible camera/zone relationships
+
+Temporal manager:
+
+    time-based candidate filtering
+
+OSNet:
+
+    appearance similarity
+
+PAR/Pose:
+
+    supporting identity evidence
+
+Qdrant:
+
+    vector storage + candidate-restricted vector search
+
+AssociationManager:
+
+    Global ID decision
+
+JourneyManager:
+
+    Global ID history
+
+Phase 2:
+
+    business/compliance interpretation
+
+Do not mix these responsibilities.
+
+============================================================
+31. PHASE 1 MUST NOT CONTAIN
+============================================================
+
+DO NOT implement:
+
+    handwashing classification
+
+    handwash = true
+
+    handwash = false
+
+    violation
+
+    non-violation
+
+    compliance score
+
+    route violation
+
+    glove violation
+
+    ring violation
+
+    final business rules
+
+    "handwashed person must use passage"
+
+    "non-handwashed person must use exit"
+
+Phase 1 only records facts.
+
+============================================================
+32. PHASE 1 ACCEPTANCE TESTS
+============================================================
+
+TEST 1:
+
+    Waiting Lobby
+        ↓
+    Pantry
+        ↓
+    Passage
+
+Expected:
+
+    same Global ID
+
+------------------------------------------------------------
+
+TEST 2:
+
+    Passage
+        ↓
+    Pantry
+        ↓
+    Waiting Lobby
+
+Expected:
+
+    same Global ID
+
+------------------------------------------------------------
+
+TEST 3:
+
+    Person enters Pantry sink ROI.
+
+Expected:
+
+    ROI_ENTER
+
+------------------------------------------------------------
+
+TEST 4:
+
+    Person exits Pantry sink ROI.
+
+Expected:
+
+    ROI_EXIT
+
+------------------------------------------------------------
+
+TEST 5:
+
+    Person crosses pantry_yellow.
+
+Expected:
+
+    TRANSITION_CROSSED
+
+------------------------------------------------------------
+
+TEST 6:
+
+    Person crosses pantry_green.
+
+Expected:
+
+    TRANSITION_CROSSED
+
+------------------------------------------------------------
+
+TEST 7:
+
+    Person crosses waiting_lobby transition.
+
+Expected:
+
+    TRANSITION_CROSSED
+
+------------------------------------------------------------
+
+TEST 8:
+
+    Person crosses passage transition.
+
+Expected:
+
+    TRANSITION_CROSSED
+
+------------------------------------------------------------
+
+TEST 9:
+
+    Person disappears temporarily.
+
+Expected:
+
+    TEMPORARILY_LOST
+
+NOT:
+
+    immediately NEW GLOBAL ID
+
+------------------------------------------------------------
+
+TEST 10:
+
+    Person reappears on valid next camera.
+
+Expected:
+
+    REACQUIRE EXISTING GLOBAL ID
+
+------------------------------------------------------------
+
+TEST 11:
+
+    Two people have similar ReID embeddings.
+
+Expected:
+
+    spatial + temporal + topology restrict candidates.
+
+Do not blindly select the highest ReID score.
+
+------------------------------------------------------------
+
+TEST 12:
+
+    A person has high ReID similarity but an impossible
+    camera transition.
+
+Expected:
+
+    candidate rejected.
+
+------------------------------------------------------------
+
+TEST 13:
+
+    Same Global ID is accidentally assigned to two active
+    incompatible tracks.
+
+Expected:
+
+    GLOBAL_ID_CONFLICT
+
+------------------------------------------------------------
+
+TEST 14:
+
+    Ambiguous ReID scores.
+
+Expected:
+
+    PENDING / AMBIGUOUS
+
+Do not immediately create/switch Global ID.
+
+============================================================
+33. PERFORMANCE
+============================================================
+
+Do not run expensive ReID inference on every frame.
+
+Reuse the existing:
+
+    reid_interval
+
+Use:
+
+    quality filtering
+    crop-size filtering
+    embedding diversity filtering
+    bounded embedding bank
+
+Qdrant search should only happen when a new/updated identity
+association is actually required.
+
+Do not repeatedly query Qdrant for an already confirmed stable
+local track unless necessary.
+
+============================================================
+34. LOGGING
+============================================================
+
+Add useful logs:
+
+    [CAMERA]
+    [ROI]
+    [TRANSITION]
+    [SPATIAL]
+    [TEMPORAL]
+    [QDRANT]
+    [REID]
+    [ASSOCIATION]
+    [JOURNEY]
+    [CONFLICT]
+
+Example:
+
+[TRANSITION]
+G12 crossed pantry_yellow
+
+[TEMPORAL]
+G12 last seen in pantry 2.1s ago
+
+[TOPOLOGY]
+pantry -> passage VALID
+
+[QDRANT]
+Candidate G12 similarity=0.74
+
+[ASSOCIATION]
+LocalTrack=7 -> GlobalID=G12 CONFIRMED
+
+[JOURNEY]
+G12: pantry -> passage
+
+============================================================
+35. CONFIGURATION CLEANUP
+============================================================
+
+Do NOT store secrets inside YAML.
+
+Use:
+
+    QDRANT_URL
+    QDRANT_API_KEY
+
+from environment variables.
+
+If the existing repository contains an exposed Qdrant API key:
+
+    rotate/revoke it
+    remove it from source/config
+    use environment variables
+    update .gitignore
+
+Do not expose credentials in logs.
+
+============================================================
+36. IMPLEMENTATION ORDER
+============================================================
+
+Implement in this order.
+
+STEP 1:
+
+Inspect existing repository architecture.
+
+Identify:
+
+    current tracker
+    current GlobalMatcher
+    current QdrantGallery
+    current EmbeddingBank
+    current config
+    current multi-camera processor
+    existing association/topology code if present
+
+Do not modify anything yet.
+
+------------------------------------------------------------
+
+STEP 2:
+
+Refactor configuration.
+
+Add:
+
+    cameras
+    zones
+    sink ROI
+    transitions
+    topology
+    temporal constraints
+    Qdrant configuration
+
+------------------------------------------------------------
+
+STEP 3:
+
+Implement/extend transition detection.
+
+Test independently.
+
+------------------------------------------------------------
+
+STEP 4:
+
+Implement/extend sink ROI detection.
+
+Test independently.
+
+------------------------------------------------------------
+
+STEP 5:
+
+Implement GlobalIdentityState.
+
+------------------------------------------------------------
+
+STEP 6:
+
+Implement JourneyManager.
+
+------------------------------------------------------------
+
+STEP 7:
+
+Implement spatial candidate filtering.
+
+------------------------------------------------------------
+
+STEP 8:
+
+Implement temporal candidate filtering.
+
+------------------------------------------------------------
+
+STEP 9:
+
+Implement topology candidate filtering.
+
+------------------------------------------------------------
+
+STEP 10:
+
+Modify QdrantGallery to support candidate-restricted search.
+
+Do NOT remove existing persistence functionality.
+
+------------------------------------------------------------
+
+STEP 11:
+
+Modify GlobalMatcher / AssociationManager.
+
+New order:
+
+    spatial
+    temporal
+    topology
+    Qdrant
+    ReID
+    confirmation
+
+------------------------------------------------------------
+
+STEP 12:
+
+Integrate journey updates.
+
+Every successful association must update:
+
+    current camera
+    current zone
+    previous camera
+    previous zone
+    last seen
+    transition
+    journey history
+
+------------------------------------------------------------
+
+STEP 13:
+
+Add structured diagnostic logs.
+
+------------------------------------------------------------
+
+STEP 14:
+
+Add visual debug overlays.
+
+------------------------------------------------------------
+
+STEP 15:
+
+Run unit tests.
+
+------------------------------------------------------------
+
+STEP 16:
+
+Run integration tests against the three CCTV videos.
+
+============================================================
+37. FINAL PHASE 1 OUTPUT
+============================================================
+
+At the end of Phase 1, the system must be able to answer:
+
+    Where is Global ID 12 now?
+
+    Which camera did Global ID 12 come from?
+
+    What was the previous camera?
+
+    When was Global ID 12 last seen?
+
+    Which transition did Global ID 12 last cross?
+
+    Did Global ID 12 enter the Pantry sink ROI?
+
+    When did Global ID 12 enter the sink ROI?
+
+    When did Global ID 12 leave the sink ROI?
+
+    Which camera did Global ID 12 appear on next?
+
+    How long did the transition take?
+
+    Why was the new local track assigned Global ID 12?
+
+    Which candidate Global IDs were rejected?
+
+    What was the Qdrant/ReID similarity?
+
+    Was the association CONFIRMED or PENDING?
+
+    Did any Global ID conflict occur?
+
+============================================================
+38. FINAL ARCHITECTURE
+============================================================
+
+The final Phase 1 architecture must be:
+
+                    FLOOR PLAN
+                        |
+                        v
+               CAMERA / ZONE CONFIG
+                        |
+                        v
+                 YOLO + BoT-SORT
+                        |
+                        v
+                  LOCAL TRACK
+                        |
+            +-----------+-----------+
+            |           |           |
+            v           v           v
+          ROI      TRANSITION    TRACK STATE
+            |           |           |
+            +-----------+-----------+
+                        |
+                        v
+               GLOBAL ASSOCIATION
+                        |
+              +---------+---------+
+              |         |         |
+              v         v         v
+           SPATIAL   TEMPORAL  TOPOLOGY
+              |         |         |
+              +---------+---------+
+                        |
+                        v
+                VALID CANDIDATES
+                        |
+                        v
+                     QDRANT
+                        |
+                        v
+                 OSNET / REID
+                        |
+                        v
+               MULTI-FRAME CONFIRM
+                        |
+                        v
+                  GLOBAL ID
+                        |
+                        v
+                JOURNEY MANAGER
+                        |
+                        v
+              JOURNEY / EVENT LOG
+                        |
+                        v
+                 PHASE 2 INPUT
+
+
+============================================================
+FINAL RULE
+============================================================
+
+The most important architectural rule is:
+
+    DO NOT ASK REID FIRST.
+
+Instead ask:
+
+    1. Where was this person?
+    2. Which zone were they in?
+    3. Which transition did they cross?
+    4. Which cameras can they realistically appear on?
+    5. How much time passed?
+    6. Which Global IDs are therefore possible?
+    7. Among those candidates, which one matches visually?
+    8. Can the match be confirmed across multiple observations?
+    9. Update the Global ID journey.
+
+The system should use:
+
+    FLOOR PLAN
+        +
+    SPATIAL CONSTRAINTS
+        +
+    TEMPORAL CONSTRAINTS
+        +
+    TRANSITION EVENTS
+        +
+    QDRANT / REID
+        +
+    MULTI-FRAME CONFIRMATION
+
+to maintain Global IDs.
+
+PHASE 2 will consume the resulting journey and determine:
+
+    VIOLATION
+    or
+    NON-VIOLATION
+
+Do not implement Phase 2 now.
