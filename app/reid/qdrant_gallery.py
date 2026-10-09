@@ -326,13 +326,23 @@ class QdrantGallery:
                     )
                 ]
             )
-            results = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=vec,
-                query_filter=query_filter,
-                limit=top_k * len(candidate_gids),
-                with_payload=True
-            )
+            if hasattr(self.client, "query_points"):
+                query_res = self.client.query_points(
+                    collection_name=self.collection_name,
+                    query=vec,
+                    query_filter=query_filter,
+                    limit=top_k * len(candidate_gids),
+                    with_payload=True
+                )
+                results = query_res.points
+            else:
+                results = self.client.search(
+                    collection_name=self.collection_name,
+                    query_vector=vec,
+                    query_filter=query_filter,
+                    limit=top_k * len(candidate_gids),
+                    with_payload=True
+                )
             for res in results:
                 gid = res.payload.get("global_id")
                 sim = float(res.score)

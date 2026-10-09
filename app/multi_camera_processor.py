@@ -4,6 +4,7 @@ import os
 import json
 import datetime
 import logging
+import copy
 from typing import Optional, Dict, List, Any, Set, Tuple
 
 from app.reid.quality import calculate_quality
@@ -143,51 +144,82 @@ class MultiCameraProcessor:
         self.store = store
         self.phase1_mode = bool(config.get("phase1_mode", True) or (association_manager is not None))
 
-        # Initialize Phase 1 Event Detectors (Transition & ROI)
+        # State & Detectors per camera
         self.transition_detectors = {}
         self.roi_detectors = {}
-        cam_cfgs = self.config.get("cameras", {})
-        for cam in cameras_info:
-            c_id = cam["camera_id"]
-            c_cfg = cam_cfgs.get(c_id, {})
-            c_zone = c_cfg.get("zone", c_id)
-            self.transition_detectors[c_id] = TransitionDetector(
-                camera_id=c_id,
-                zone=c_zone,
-                transitions_config=c_cfg.get("transitions", {}),
-                cooldown_frames=int(config.get("transition_cooldown_frames", 15))
-            )
-            self.roi_detectors[c_id] = RoiDetector(
-                camera_id=c_id,
-                zone=c_zone,
-                roi_config=c_cfg.get("roi", {}),
-                debounce_frames=int(config.get("roi_debounce_frames", 3))
-            )
-
-        # State per camera
         self.state = {}
+        cam_cfgs = self.config.get("cameras", {})
         for cam in cameras_info:
             c_id = cam["camera_id"]
             c_cfg = cam_cfgs.get(c_id, {})
             c_zone = c_cfg.get("zone", c_id)
             v_path = cam.get("video_path", "")
             if not os.path.exists(v_path):
-                # Fallback for common filename typos: panty <-> pantry
-                if "pantry" in v_path and os.path.exists(v_path.replace("pantry", "panty")):
-                    logging.warning(f"[{c_id}] Video '{v_path}' not found, falling back to '{v_path.replace('pantry', 'panty')}'")
-                    v_path = v_path.replace("pantry", "panty")
-                elif "panty" in v_path and os.path.exists(v_path.replace("panty", "pantry")):
-                    logging.warning(f"[{c_id}] Video '{v_path}' not found, falling back to '{v_path.replace('panty', 'pantry')}'")
-                    v_path = v_path.replace("panty", "pantry")
+                candidates = [
+                    v_path.replace("test_2", "test2"),
+                    v_path.replace("test2", "test_2"),
+                    v_path.replace("passage1", "passage_1"),
+                    v_path.replace("passage_1", "passage1"),
+                    v_path.replace("pantry", "panty"),
+                    v_path.replace("panty", "pantry"),
+                    v_path.replace("test_2", "test2").replace("passage1", "passage_1"),
+                    v_path.replace("test2", "test_2").replace("passage_1", "passage1"),
+                ]
+                for cand_path in candidates:
+                    if os.path.exists(cand_path):
+                        logging.warning(f"[{c_id}] Video '{v_path}' not found, falling back to '{cand_path}'")
+                        v_path = cand_path
+                        break
 
             cap = cv2.VideoCapture(v_path)
             if not cap.isOpened():
                 logging.error(f"[{c_id}] FAILED to open video: '{v_path}'. Verify file exists and format is supported.")
 
+            c_crop = c_cfg.get("crop")  # [x1, y1, x2, y2]
+            
+            # Setup ROI and transitions configs, auto-scaling if crop is defined
+            roi_cfg = copy.deepcopy(c_cfg.get("roi", {}))
+            trans_cfg = copy.deepcopy(c_cfg.get("transitions", {}))
+            if c_crop:
+                cap_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+                cap_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+                cx1, cy1, cx2, cy2 = c_crop
+                cw = max(1, cx2 - cx1)
+                ch = max(1, cy2 - cy1)
+                sx = cap_w / float(cw)
+                sy = cap_h / float(ch)
+
+                for roi_id, r_info in roi_cfg.items():
+                    if "points" in r_info:
+                        r_info["points"] = [
+                            [int(round((pt[0] - cx1) * sx)), int(round((pt[1] - cy1) * sy))]
+                            for pt in r_info["points"]
+                        ]
+                for trans_id, t_info in trans_cfg.items():
+                    if "points" in t_info:
+                        pts = t_info["points"]
+                        if "start" in pts and "end" in pts:
+                            pts["start"] = [int(round((pts["start"][0] - cx1) * sx)), int(round((pts["start"][1] - cy1) * sy))]
+                            pts["end"] = [int(round((pts["end"][0] - cx1) * sx)), int(round((pts["end"][1] - cy1) * sy))]
+
+            self.transition_detectors[c_id] = TransitionDetector(
+                camera_id=c_id,
+                zone=c_zone,
+                transitions_config=trans_cfg,
+                cooldown_frames=int(config.get("transition_cooldown_frames", 15))
+            )
+            self.roi_detectors[c_id] = RoiDetector(
+                camera_id=c_id,
+                zone=c_zone,
+                roi_config=roi_cfg,
+                debounce_frames=int(config.get("roi_debounce_frames", 3))
+            )
+
             self.state[c_id] = {
                 "cap": cap,
                 "video_path": v_path,
                 "zone": c_zone,
+                "crop": c_crop,
                 "model": YOLO(config["model_path"]), # Independent YOLO state per camera!
                 "banks": {},
                 "global_assignments": {},
@@ -200,16 +232,9 @@ class MultiCameraProcessor:
                 "active_tracks": 0,
                 "reid_extractions": 0,
                 "global_ids_set": set(),
-                "no_match_counters": {},
-                "hysteresis_counters": {},
-                "hysteresis_candidate": {},
                 "last_seen_frame": {},
                 "local_id_map": {},
-                "next_local_id": 1,
-                "comparison_history": {},
-                "ambiguity_tracker": {},
-                "pending_candidate": {},
-                "pending_counters": {}
+                "next_local_id": 1
             }
             
         self.running = True
@@ -227,14 +252,6 @@ class MultiCameraProcessor:
                 t_hw = self.handwash_detector.get_status(track_id)
                 if t_hw != "UNKNOWN":
                     self.person_state_manager.update_handwash_status(gid, t_hw)
-
-    def _log_par_event(self, event_dict):
-        try:
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/par_detections.jsonl", "a") as f:
-                f.write(json.dumps(event_dict) + "\n")
-        except Exception:
-            pass
 
     def run(self, max_frames: Optional[int] = None):
         # Validate cameras
@@ -288,6 +305,12 @@ class MultiCameraProcessor:
                     else:
                         all_finished = False
                         
+                        # Apply camera crop & zoom if configured
+                        if state.get("crop"):
+                            cx1, cy1, cx2, cy2 = state["crop"]
+                            frame = frame[cy1:cy2, cx1:cx2]
+                            frame = cv2.resize(frame, (w, h))
+
                         # Process frame
                         frame = self._process_frame(cam_id, frame, frame_idx, w, h)
                         state["last_frame"] = frame.copy()
@@ -363,13 +386,12 @@ class MultiCameraProcessor:
             tracker=self.config.get("tracker_config", "botsort.yaml"), 
             persist=True, 
             verbose=False,
-            conf=0.10,
+            conf=self.config.get("detection_confidence", 0.25),
             imgsz=self.config.get("imgsz", 1280)
         )
         
-        # ADDED: User requested debug logging
         result = results[0]
-        logging.info(f"{camera_id.upper()}: boxes={len(result.boxes)}, track_ids={result.boxes.id}")
+        logging.debug(f"{camera_id.upper()}: boxes={len(result.boxes)}, track_ids={result.boxes.id}")
         
         tracks = []
         raw_detections = []
@@ -416,33 +438,34 @@ class MultiCameraProcessor:
         state["detections"] += len(tracks) + len(raw_detections)
         state["active_tracks"] = len(tracks)
                 
-        # Find all currently active Global IDs in this camera frame (including recently occluded tracks)
+        # Current active track IDs in this frame
+        current_track_ids = {int(t[4]) for t in tracks}
+        for tid in current_track_ids:
+            state["last_seen_frame"][tid] = frame_idx
+
+        # Find active global IDs in this camera (currently visible tracks + tracks within brief occlusion buffer)
+        occlusion_buffer_frames = int(self.config.get("occlusion_buffer_frames", 20))
         active_global_ids = set()
-        
-        # First update last seen frames for current tracks
-        for t in tracks:
-            track_id = int(t[4])
-            state["last_seen_frame"][track_id] = frame_idx
-            
-        # Build active GIDs from any track seen in the last 30 frames (to cover brief BoT-SORT occlusions)
-        for tid, last_frame in state["last_seen_frame"].items():
-            if frame_idx - last_frame <= 30:
-                if tid in state["global_assignments"]:
-                    active_global_ids.add(state["global_assignments"][tid])
+        for tid, last_seen in state["last_seen_frame"].items():
+            if (frame_idx - last_seen) <= occlusion_buffer_frames:
+                gid = state["global_assignments"].get(tid)
+                if gid:
+                    active_global_ids.add(gid)
 
         cam_zone = state.get("zone", camera_id)
         fps = state["cap"].get(cv2.CAP_PROP_FPS)
         fps = fps if (fps and fps > 0) else 30.0
         current_time = float(frame_idx) / float(fps)
 
-        # Handle tracks that disappeared (> 30 frames)
-        current_track_ids = {int(t[4]) for t in tracks}
+        # Handle tracks that disappeared (> track_lost_frames, default 60 frames)
+        track_lost_frames = int(self.config.get("track_lost_frames", 60))
         for tid, l_frame in list(state["last_seen_frame"].items()):
-            if tid not in current_track_ids and (frame_idx - l_frame > 30):
+            if tid not in current_track_ids and (frame_idx - l_frame > track_lost_frames):
                 if camera_id in self.roi_detectors:
                     self.roi_detectors[camera_id].on_track_lost(tid, frame_idx, current_time)
                 if self.journey_manager:
                     self.journey_manager.on_track_lost(camera_id, cam_zone, tid, current_time, frame_idx)
+                state["global_assignments"].pop(tid, None)
                 state["last_seen_frame"].pop(tid, None)
 
         # Periodic expiration check
@@ -546,10 +569,17 @@ class MultiCameraProcessor:
                             active_camera_gids=active_global_ids
                         )
                         if assoc_status == "MATCHED" and assigned_gid:
+                            # Enforce 1-to-1 mapping per camera: evict assigned_gid from any other track in this camera
+                            for other_tid, existing_gid in list(state["global_assignments"].items()):
+                                if existing_gid == assigned_gid and other_tid != track_id:
+                                    state["global_assignments"].pop(other_tid, None)
+                                    state["match_status"].pop(other_tid, None)
+
                             state["global_assignments"][track_id] = assigned_gid
                             state["global_ids_set"].add(assigned_gid)
                             state["match_status"][track_id] = "MATCHED"
                             active_global_ids.add(assigned_gid)
+                            self._sync_global_id_assignment(camera_id, track_id, assigned_gid)
                             update_min_q = float(self.config.get("gallery_update_min_quality", 0.60))
                             if added and quality >= update_min_q:
                                 self.gallery.update_identity(
@@ -558,7 +588,8 @@ class MultiCameraProcessor:
                                     bank_embeddings
                                 )
                         elif assoc_status == "PENDING":
-                            state["match_status"][track_id] = "PENDING"
+                            if state["match_status"].get(track_id) != "MATCHED":
+                                state["match_status"][track_id] = "PENDING"
 
         # ---------------------------------------------------------
         # Phase 1 Floor-Plan Annotations & Overlays
@@ -612,6 +643,7 @@ class MultiCameraProcessor:
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, line_col, 2)
 
         # 3. Draw Track Boxes & Journey Badges
+        rendered_gids = set()
         for t in tracks:
             x1, y1, x2, y2, track_id, conf, cls = t
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
@@ -622,6 +654,13 @@ class MultiCameraProcessor:
             gid = state["global_assignments"].get(track_id)
             m_status = state.get("match_status", {}).get(track_id, "PENDING")
             
+            # Guard against duplicate GID rendering on multiple bounding boxes in the same frame
+            if gid and gid in rendered_gids:
+                gid = None
+                m_status = "PENDING"
+            elif gid and m_status == "MATCHED":
+                rendered_gids.add(gid)
+
             ident_state = self.journey_manager.get_identity(gid) if (gid and self.journey_manager) else None
             last_trans = ident_state.last_transition_id if ident_state else None
             curr_roi = ident_state.current_roi if ident_state else None
@@ -634,7 +673,8 @@ class MultiCameraProcessor:
                 cand = self.association_manager.pending_candidate.get((camera_id, track_id)) if self.association_manager else None
                 if cand:
                     cnt = self.association_manager.pending_counters.get((camera_id, track_id), 1)
-                    top_text = f"PENDING ({cand} {cnt}/5) | L{track_id}"
+                    pending_thresh = int(self.config.get("pending_confirm_frames", 3))
+                    top_text = f"PENDING ({cand} {cnt}/{pending_thresh}) | L{track_id}"
                 else:
                     top_text = f"PENDING | L{track_id}"
             else:

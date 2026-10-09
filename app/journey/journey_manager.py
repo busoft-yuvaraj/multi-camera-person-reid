@@ -20,10 +20,12 @@ class JourneyManager:
     def __init__(
         self,
         store: JourneyStore,
-        reacquisition_timeout_seconds: float = 20.0
+        reacquisition_timeout_seconds: float = 20.0,
+        transition_rules: Optional[List[Dict[str, Any]]] = None
     ):
         self.store = store
         self.reacquisition_timeout_seconds = reacquisition_timeout_seconds
+        self.transition_rules = transition_rules or []
         
         # Registry of all Global Identities: gid -> GlobalIdentityState
         self.identities: Dict[str, GlobalIdentityState] = {}
@@ -111,27 +113,57 @@ class JourneyManager:
         current_active = self.gid_to_active_track.get(global_id)
         if current_active is not None and current_active != (camera_id, local_track_id):
             active_cam, active_tid = current_active
-            conflict_evt = JourneyEvent(
-                event="GLOBAL_ID_CONFLICT",
-                global_id=global_id,
-                camera_id=camera_id,
-                zone=zone,
-                local_track_id=local_track_id,
-                timestamp=timestamp,
-                frame_idx=frame_idx,
-                details={
-                    "reason": f"Simultaneous assignment: already active in {active_cam} (Track {active_tid})",
-                    "conflict_camera": active_cam,
-                    "conflict_track_id": active_tid
-                }
-            )
-            state.add_event(conflict_evt)
-            self.store.log_event(conflict_evt)
-            logging.error(
-                f"[CONFLICT] {global_id} already active in {active_cam} Track {active_tid}. "
-                f"Cannot assign to {camera_id} Track {local_track_id} simultaneously!"
-            )
-            return False
+            
+            # Case 1: Same camera replacement (e.g. BoT-SORT dropped previous local track ID)
+            if active_cam == camera_id:
+                logging.info(
+                    f"[JOURNEY] Track replacement in {camera_id}: {global_id} moved from Track {active_tid} to Track {local_track_id}"
+                )
+                self.active_tracks.pop((active_cam, active_tid), None)
+            else:
+                # Case 2: Cross-camera transition
+                # Real conflict only if seen simultaneously in two distinct cameras within < 1.0s
+                # UNLESS last transition was specifically directed towards camera_id or target zone!
+                is_expected_transition = False
+                if getattr(state, "last_transition_target_camera", None) == camera_id:
+                    is_expected_transition = True
+                elif getattr(state, "last_transition_target_zone", None) == zone:
+                    is_expected_transition = True
+                elif self.transition_rules and state.last_transition_id:
+                    for rule in self.transition_rules:
+                        if rule.get("from_camera") == active_cam and rule.get("transition") == state.last_transition_id:
+                            c_zones = rule.get("candidate_zones", [])
+                            if camera_id in c_zones or zone in c_zones:
+                                is_expected_transition = True
+                                break
+                time_diff = abs(timestamp - state.last_seen_timestamp)
+                if not is_expected_transition and time_diff < 1.0 and state.status == IdentityStatus.ACTIVE and active_cam != camera_id:
+                    conflict_evt = JourneyEvent(
+                        event="GLOBAL_ID_CONFLICT",
+                        global_id=global_id,
+                        camera_id=camera_id,
+                        zone=zone,
+                        local_track_id=local_track_id,
+                        timestamp=timestamp,
+                        frame_idx=frame_idx,
+                        details={
+                            "reason": f"Simultaneous assignment: already active in {active_cam} (Track {active_tid})",
+                            "conflict_camera": active_cam,
+                            "conflict_track_id": active_tid
+                        }
+                    )
+                    state.add_event(conflict_evt)
+                    self.store.log_event(conflict_evt)
+                    logging.error(
+                        f"[CONFLICT] {global_id} already active in {active_cam} Track {active_tid}. "
+                        f"Cannot assign to {camera_id} Track {local_track_id} simultaneously!"
+                    )
+                    return False
+                else:
+                    logging.info(
+                        f"[JOURNEY] Transitioning {global_id} from {active_cam} (Track {active_tid}) to {camera_id} (Track {local_track_id})"
+                    )
+                    self.active_tracks.pop((active_cam, active_tid), None)
 
         is_reacquisition = (state.current_camera != camera_id) or (state.status in [IdentityStatus.TEMPORARILY_LOST, IdentityStatus.REACQUIRABLE])
 
@@ -203,7 +235,8 @@ class JourneyManager:
         key = (camera_id, local_track_id)
         gid = self.active_tracks.pop(key, None)
         if gid:
-            self.gid_to_active_track.pop(gid, None)
+            if self.gid_to_active_track.get(gid) == key:
+                self.gid_to_active_track.pop(gid, None)
             state = self.identities.get(gid)
             if state:
                 state.status = IdentityStatus.TEMPORARILY_LOST
@@ -255,6 +288,8 @@ class JourneyManager:
             state.last_transition_id = event.transition_id
             state.last_transition_timestamp = event.timestamp
             state.last_transition_direction = event.direction
+            state.last_transition_target_camera = event.target_camera
+            state.last_transition_target_zone = event.target_zone
             state.add_event(j_evt)
             self.store.log_event(j_evt)
         else:
@@ -328,8 +363,21 @@ class JourneyManager:
                     self.store.log_event(evt)
 
     def _set_active_mapping(self, camera_id: str, local_track_id: int, global_id: str):
-        self.active_tracks[(camera_id, local_track_id)] = global_id
-        self.gid_to_active_track[global_id] = (camera_id, local_track_id)
+        key = (camera_id, local_track_id)
+        
+        # If this track was previously mapped to an old GID, unmap that old GID
+        old_gid = self.active_tracks.get(key)
+        if old_gid and old_gid != global_id:
+            if self.gid_to_active_track.get(old_gid) == key:
+                self.gid_to_active_track.pop(old_gid, None)
+                
+        # If this GID was previously mapped to an old track, unmap that old track
+        old_key = self.gid_to_active_track.get(global_id)
+        if old_key and old_key != key:
+            self.active_tracks.pop(old_key, None)
+            
+        self.active_tracks[key] = global_id
+        self.gid_to_active_track[global_id] = key
 
     def _transfer_pending_events(self, camera_id: str, local_track_id: int, global_id: str):
         key = (camera_id, local_track_id)
@@ -346,6 +394,8 @@ class JourneyManager:
                     state.last_transition_id = evt.details.get("transition_id")
                     state.last_transition_timestamp = evt.timestamp
                     state.last_transition_direction = evt.details.get("direction")
+                    state.last_transition_target_camera = evt.details.get("target_camera")
+                    state.last_transition_target_zone = evt.details.get("target_zone")
                 elif evt.event == "ROI_ENTER":
                     state.current_roi = evt.details.get("roi_id")
                     state.last_roi_enter_timestamp = evt.timestamp

@@ -6,7 +6,7 @@ from .candidate_filter import CandidateFilter
 from app.journey.journey_manager import JourneyManager
 from app.journey.journey_store import JourneyStore
 from app.reid.matcher import GlobalMatcher
-from app.journey.models import IdentityStatus
+
 
 class AssociationManager:
     """
@@ -67,13 +67,25 @@ class AssociationManager:
         """
         key = (camera_id, local_track_id)
         current_gid = self.journey_manager.active_tracks.get(key)
+        if current_gid is None:
+            # Fallback check across identities
+            for gid, ident in self.journey_manager.identities.items():
+                if ident.current_camera == camera_id and ident.current_local_track_id == local_track_id:
+                    current_gid = gid
+                    self.journey_manager._set_active_mapping(camera_id, local_track_id, gid)
+                    break
 
         # -------------------------------------------------------------
-        # Case A: Track is ALREADY CONFIRMED to a Global ID -> Check Hysteresis
+        # Case A: Track is ALREADY CONFIRMED to a Global ID -> Check Hysteresis / Lock
         # -------------------------------------------------------------
         if current_gid is not None:
             self.journey_manager.update_track_presence(camera_id, local_track_id, current_time, frame_idx)
             
+            # If lock_confirmed_id is enabled (default True), NEVER switch the ID once assigned!
+            lock_confirmed = bool(self.config.get("lock_confirmed_id", True))
+            if lock_confirmed:
+                return current_gid, "MATCHED", 1.0, {"status": "RETAINED"}
+
             # Check if an overwhelming candidate wants to switch (Hysteresis Guard)
             h_thresh = float(self.config.get("hysteresis_switch_threshold", 0.92))
             h_margin = float(self.config.get("hysteresis_switch_margin", 0.12))
@@ -151,7 +163,7 @@ class AssociationManager:
         # -------------------------------------------------------------
         # Case B: Track is NOT YET CONFIRMED
         # -------------------------------------------------------------
-        confirm_frames = int(self.config.get("reid_confirm_frames", 5))
+        confirm_frames = int(self.config.get("reid_confirm_frames", 3))
         if len(bank_embeddings) < confirm_frames:
             return None, "PENDING", 0.0, {
                 "decision": "COLLECTING_EVIDENCE",
@@ -195,7 +207,7 @@ class AssociationManager:
         # -------------------------------------------------------------
         if not valid_gids:
             self.no_match_counters[key] = self.no_match_counters.get(key, 0) + 1
-            new_id_confirm = int(self.config.get("reid_new_id_confirm_frames", 25))
+            new_id_confirm = int(self.config.get("reid_new_id_confirm_frames", 15))
 
             decision_data["decision"] = "NO_VALID_CANDIDATES"
             decision_data["no_match_count"] = self.no_match_counters[key]
@@ -246,11 +258,12 @@ class AssociationManager:
                 current_camera=camera_id,
                 consecutive_candidate_count=p_count
             )
-            # Factor in spatial & temporal gate scores as supporting multiplier
+            # Factor in spatial & temporal gate scores as supporting multiplier (no harsh penalty on strong ReID)
             cand_eval = evals.get(cand_gid, {})
             t_score = cand_eval.get("temporal_score", 1.0)
             s_score = cand_eval.get("spatial_score", 1.0)
-            adjusted_score = score * (0.80 + 0.10 * t_score + 0.10 * s_score)
+            gate_factor = 0.92 + 0.04 * min(1.0, t_score) + 0.04 * min(1.0, s_score)
+            adjusted_score = score * gate_factor
             scored_candidates.append((cand_gid, float(adjusted_score), details))
 
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -271,12 +284,15 @@ class AssociationManager:
         thresh_ambig = float(self.config.get("threshold_ambiguous", 0.68))
         thresh_cross = float(self.config.get("threshold_cross_view", 0.62))
         ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
-        pending_promote_frames = int(self.config.get("pending_confirm_frames", 5))
+        pending_promote_frames = int(self.config.get("pending_confirm_frames", 3))
 
         is_cross = best_details.get("is_cross_view", False)
 
+        cand_eval = evals.get(best_gid, {})
+        has_matching_transition = (cand_eval.get("spatial_score", 0.0) >= 0.95)
+
         # Immediate Confirmation Check
-        if best_sim >= thresh_match and (margin >= ambig_margin or second_sim == 0.0):
+        if (best_sim >= thresh_match or (has_matching_transition and best_sim >= 0.70)) and (margin >= ambig_margin or second_sim == 0.0):
             # Confirm immediately!
             confirmed = self.journey_manager.confirm_association(
                 global_id=best_gid,
@@ -296,9 +312,15 @@ class AssociationManager:
                 decision_data["selected_global_id"] = best_gid
                 self.store.log_association_decision(decision_data)
                 return best_gid, "MATCHED", best_sim, decision_data
+            else:
+                self.pending_candidate[key] = best_gid
+                self.pending_counters[key] = 1
+                decision_data["decision"] = f"PENDING_CANDIDATE ({best_gid}, 1/{pending_promote_frames})"
+                self.store.log_association_decision(decision_data)
+                return best_gid, "PENDING", best_sim, decision_data
 
         # PENDING Candidate Check (borderline or cross-view awaiting evidence)
-        elif (is_cross and best_sim >= thresh_cross) or (best_sim >= thresh_ambig):
+        elif (is_cross and best_sim >= thresh_cross) or (best_sim >= thresh_ambig) or (has_matching_transition and best_sim >= 0.60):
             prev_cand = self.pending_candidate.get(key)
             if prev_cand == best_gid:
                 self.pending_counters[key] = self.pending_counters.get(key, 0) + 1
@@ -310,7 +332,7 @@ class AssociationManager:
             decision_data["pending_count"] = p_count
             decision_data["pending_threshold"] = pending_promote_frames
 
-            if p_count >= pending_promote_frames or (dom_view == "FRONT" and best_sim >= 0.72):
+            if p_count >= pending_promote_frames or (dom_view == "FRONT" and best_sim >= 0.72) or (has_matching_transition and best_sim >= 0.65):
                 confirmed = self.journey_manager.confirm_association(
                     global_id=best_gid,
                     camera_id=camera_id,
@@ -329,6 +351,10 @@ class AssociationManager:
                     decision_data["selected_global_id"] = best_gid
                     self.store.log_association_decision(decision_data)
                     return best_gid, "MATCHED", best_sim, decision_data
+                else:
+                    decision_data["decision"] = f"CONFLICT_DEFERRED ({best_gid})"
+                    self.store.log_association_decision(decision_data)
+                    return best_gid, "PENDING", best_sim, decision_data
             else:
                 self.no_match_counters[key] = 0
                 decision_data["decision"] = f"PENDING_CANDIDATE ({best_gid}, {p_count}/{pending_promote_frames})"
@@ -337,7 +363,7 @@ class AssociationManager:
 
         # NO_MATCH: Below threshold
         self.no_match_counters[key] = self.no_match_counters.get(key, 0) + 1
-        new_id_confirm = int(self.config.get("reid_new_id_confirm_frames", 25))
+        new_id_confirm = int(self.config.get("reid_new_id_confirm_frames", 15))
         decision_data["decision"] = "NO_MATCH_BELOW_THRESH"
         decision_data["no_match_count"] = self.no_match_counters[key]
 

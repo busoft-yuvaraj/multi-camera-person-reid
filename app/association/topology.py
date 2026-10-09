@@ -10,7 +10,7 @@ class TopologyGate:
         topology_config: Optional[Dict[str, Any]] = None,
         transition_rules: Optional[List[Dict[str, Any]]] = None
     ):
-        self.topology: Dict[str, List[str]] = topology_config or {
+        self.topology: Dict[str, Any] = topology_config or {
             "pantry": ["waiting_lobby", "passage"],
             "waiting_lobby": ["pantry", "passage"],
             "passage": ["pantry", "waiting_lobby"]

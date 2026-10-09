@@ -56,6 +56,8 @@ class GlobalIdentityState:
     last_transition_id: Optional[str] = None
     last_transition_timestamp: Optional[float] = None
     last_transition_direction: Optional[str] = None
+    last_transition_target_camera: Optional[str] = None
+    last_transition_target_zone: Optional[str] = None
     
     # ROI metadata
     current_roi: Optional[str] = None

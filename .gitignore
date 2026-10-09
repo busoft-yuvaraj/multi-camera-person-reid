@@ -19,10 +19,15 @@ wheels/
 # Application Data & Logs
 logs/
 *.log
-
 gallery/
-
 test_images/
+output/
+test_results/
+runs/
+scratch/
+.pytest_cache/
+*.jpg
+*.png
 
 # OS specific
 .DS_Store

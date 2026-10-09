@@ -22,6 +22,7 @@ cameras:
     camera_id: "pantry"
     zone: "pantry"
     video_path: "cctv_samples/pantry.mp4"
+    crop: [0, 0, 720, 720]
     roi:
       sink:
         enabled: true
@@ -107,23 +108,23 @@ transition_rules:
 temporal_constraints:
   pantry_to_waiting_lobby:
     min_seconds: 0.5
-    max_seconds: 15.0
+    max_seconds: 45.0
   waiting_lobby_to_pantry:
     min_seconds: 0.5
-    max_seconds: 15.0
+    max_seconds: 45.0
   pantry_to_passage:
     min_seconds: 0.5
-    max_seconds: 15.0
+    max_seconds: 45.0
   passage_to_pantry:
     min_seconds: 0.5
-    max_seconds: 15.0
+    max_seconds: 45.0
   waiting_lobby_to_passage:
     min_seconds: 0.5
-    max_seconds: 15.0
+    max_seconds: 45.0
   passage_to_waiting_lobby:
     min_seconds: 0.5
-    max_seconds: 15.0
-  same_camera_reacquisition_max_seconds: 10.0
+    max_seconds: 45.0
+  same_camera_reacquisition_max_seconds: 60.0
 
 # ============================================================
 # DETECTION / TRACKING
@@ -131,6 +132,7 @@ temporal_constraints:
 
 model_path: "yolo11n.pt"
 tracker_config: "botsort.yaml"
+detection_confidence: 0.25
 imgsz: 960
 track_buffer: 200
 
@@ -156,6 +158,7 @@ reid_confirm_frames: 3
 # GLOBAL ID MATCHING & HYSTERESIS
 # ============================================================
 
+lock_confirmed_id: true
 weight_reid: 0.60
 weight_par: 0.25
 weight_context: 0.15
@@ -167,8 +170,10 @@ threshold_recovery: 0.75
 reid_ambiguous_margin: 0.04
 
 pending_confirm_frames: 3
-reid_new_id_confirm_frames: 3
+reid_new_id_confirm_frames: 15
 gallery_update_min_quality: 0.60
+track_lost_frames: 60
+occlusion_buffer_frames: 20
 
 hysteresis_switch_threshold: 0.92
 hysteresis_switch_margin: 0.12

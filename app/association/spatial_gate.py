@@ -36,6 +36,7 @@ class SpatialGate:
         # e.g.: from_camera: pantry, transition: pantry_yellow -> target_zones: [waiting_lobby]
         matched_rule = False
         contradictory = False
+        contradictory_zones = []
 
         for rule in self.rules:
             from_cam = rule.get("from_camera")
@@ -46,15 +47,16 @@ class SpatialGate:
                 if current_camera in cand_zones:
                     matched_rule = True
                 else:
-                    # Transition was recently towards a completely different camera
-                    if time_since_transition < 5.0:
+                    # Transition was towards a completely different camera (e.g. yellow -> lobby, but evaluated in passage)
+                    if time_since_transition < 45.0:
                         contradictory = True
+                        contradictory_zones = cand_zones
 
         if matched_rule:
             return True, 1.0, f"TRANSITION_MATCH ({last_transition_id} -> {current_camera})"
 
         if contradictory:
-            # Penalize, but don't hard reject unless time is tiny
-            return True, 0.25, f"CONTRADICTORY_TRANSITION ({last_transition_id} expected other camera)"
+            # Reject candidate: they explicitly crossed a boundary leading to another camera
+            return False, 0.0, f"CONTRADICTORY_TRANSITION ({last_transition_id} expected {contradictory_zones}, not {current_camera})"
 
         return True, 0.60, f"TRANSITION_NEUTRAL ({last_transition_id})"

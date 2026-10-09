@@ -125,7 +125,8 @@ def main():
     )
     journey_manager = JourneyManager(
         store=store,
-        reacquisition_timeout_seconds=config.get("temporal_constraints", {}).get("same_camera_reacquisition_max_seconds", 20.0)
+        reacquisition_timeout_seconds=config.get("temporal_constraints", {}).get("same_camera_reacquisition_max_seconds", 20.0),
+        transition_rules=config.get("transition_rules")
     )
     topology_gate = TopologyGate(
         topology_config=config.get("topology"),

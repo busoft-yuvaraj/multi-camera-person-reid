@@ -2,7 +2,7 @@ from typing import Dict, List, Tuple, Optional, Set, Any
 from .topology import TopologyGate
 from .temporal_gate import TemporalGate
 from .spatial_gate import SpatialGate
-from app.journey.models import GlobalIdentityState, IdentityStatus
+from app.journey.models import GlobalIdentityState
 
 class CandidateFilter:
     """
@@ -78,10 +78,7 @@ class CandidateFilter:
                 last_trans_time = last_seen
                 status = "ACTIVE"
 
-            # Skip EXPIRED identities
-            if status == IdentityStatus.EXPIRED:
-                rejected[gid] = "IDENTITY_EXPIRED"
-                continue
+            # Reacquisition timing constraints are evaluated downstream by TemporalGate
 
             # -------------------------------------------------------------
             # 1. TOPOLOGY GATE (Hard Constraint)
