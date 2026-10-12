@@ -160,14 +160,14 @@ reid_confirm_frames: 3
 # ============================================================
 
 lock_confirmed_id: true
-weight_reid: 0.60
-weight_par: 0.25
-weight_context: 0.15
+weight_reid: 1.00
+weight_par: 0.00
+weight_context: 0.00
 
-threshold_match: 0.80
-threshold_ambiguous: 0.68
-threshold_cross_view: 0.62
-threshold_recovery: 0.75
+threshold_match: 0.70
+threshold_ambiguous: 0.60
+threshold_cross_view: 0.55
+threshold_recovery: 0.65
 reid_ambiguous_margin: 0.04
 
 pending_confirm_frames: 3

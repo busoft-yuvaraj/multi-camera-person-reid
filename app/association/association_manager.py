@@ -95,13 +95,18 @@ class AssociationManager:
             t_proto, t_par, dom_view, _ = self.matcher._extract_track_prototypes(bank_embeddings)
             if t_proto is not None:
                 # Filter candidates for switch (must also be valid!)
-                identities = self.gallery.get_identities()
+                gallery_identities = self.gallery.get_identities()
+                journey_identities = self.journey_manager.get_all_identities() if self.journey_manager else {}
+                filter_identities = {}
+                for gid in set(gallery_identities.keys()).union(journey_identities.keys()):
+                    filter_identities[gid] = journey_identities[gid] if gid in journey_identities else gallery_identities[gid]
+
                 exclude_gids = set(active_camera_gids)
                 if current_gid in exclude_gids:
                     exclude_gids.remove(current_gid)
 
                 valid_gids, evals, rejections = self.candidate_filter.filter_candidates(
-                    identities=identities,
+                    identities=filter_identities,
                     current_camera=camera_id,
                     current_zone=zone,
                     current_time=current_time,
@@ -115,11 +120,14 @@ class AssociationManager:
                     for c_gid in valid_gids:
                         if c_gid == current_gid:
                             continue
+                        c_ident = gallery_identities.get(c_gid)
+                        if not c_ident:
+                            continue
                         score, details = self.matcher.compute_candidate_score(
                             t_prototype=t_proto,
                             t_par_data=t_par,
                             dom_t_view=dom_view,
-                            candidate_identity=identities[c_gid],
+                            candidate_identity=c_ident,
                             current_camera=camera_id
                         )
                         cand_scores.append((c_gid, score, details))
@@ -178,11 +186,16 @@ class AssociationManager:
         # -------------------------------------------------------------
         # Step 1: Candidate Filtering (Topology + Temporal + Spatial)
         # -------------------------------------------------------------
-        identities = self.gallery.get_identities()
+        gallery_identities = self.gallery.get_identities()
+        journey_identities = self.journey_manager.get_all_identities() if self.journey_manager else {}
+        filter_identities = {}
+        for gid in set(gallery_identities.keys()).union(journey_identities.keys()):
+            filter_identities[gid] = journey_identities[gid] if gid in journey_identities else gallery_identities[gid]
+
         camera_occupied_gids = set(active_camera_gids)
 
         valid_gids, evals, rejections = self.candidate_filter.filter_candidates(
-            identities=identities,
+            identities=filter_identities,
             current_camera=camera_id,
             current_zone=zone,
             current_time=current_time,
@@ -197,7 +210,7 @@ class AssociationManager:
             "local_track_id": local_track_id,
             "evidence_count": len(bank_embeddings),
             "dominant_view": dom_view,
-            "all_gallery_gids": list(identities.keys()),
+            "all_gallery_gids": list(gallery_identities.keys()),
             "valid_candidates": valid_gids,
             "rejected_candidates": rejections
         }
@@ -248,7 +261,9 @@ class AssociationManager:
         # -------------------------------------------------------------
         scored_candidates = []
         for cand_gid in valid_gids:
-            ident = identities[cand_gid]
+            ident = gallery_identities.get(cand_gid)
+            if not ident:
+                continue
             p_count = self.pending_counters.get(key, 1)
             score, details = self.matcher.compute_candidate_score(
                 t_prototype=t_proto,
@@ -258,12 +273,15 @@ class AssociationManager:
                 current_camera=camera_id,
                 consecutive_candidate_count=p_count
             )
-            # Factor in spatial & temporal gate scores as supporting multiplier (no harsh penalty on strong ReID)
+            # Factor in spatial & temporal gate scores as supporting multiplier (bypassed if pure ReID testing mode)
             cand_eval = evals.get(cand_gid, {})
             t_score = cand_eval.get("temporal_score", 1.0)
             s_score = cand_eval.get("spatial_score", 1.0)
-            gate_factor = 0.92 + 0.04 * min(1.0, t_score) + 0.04 * min(1.0, s_score)
-            adjusted_score = score * gate_factor
+            if float(self.config.get("weight_reid", 0.60)) >= 0.95 or self.config.get("pure_reid_scoring", False):
+                adjusted_score = score
+            else:
+                gate_factor = 0.92 + 0.04 * min(1.0, t_score) + 0.04 * min(1.0, s_score)
+                adjusted_score = score * gate_factor
             scored_candidates.append((cand_gid, float(adjusted_score), details))
 
         scored_candidates.sort(key=lambda x: x[1], reverse=True)
@@ -280,9 +298,9 @@ class AssociationManager:
         # -------------------------------------------------------------
         # Step 5: Multi-Frame Confirmation & Promotion
         # -------------------------------------------------------------
-        thresh_match = float(self.config.get("threshold_match", 0.80))
-        thresh_ambig = float(self.config.get("threshold_ambiguous", 0.68))
-        thresh_cross = float(self.config.get("threshold_cross_view", 0.62))
+        thresh_match = float(self.config.get("threshold_match", 0.70))
+        thresh_ambig = float(self.config.get("threshold_ambiguous", 0.60))
+        thresh_cross = float(self.config.get("threshold_cross_view", 0.55))
         ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
         pending_promote_frames = int(self.config.get("pending_confirm_frames", 3))
 
@@ -292,7 +310,7 @@ class AssociationManager:
         has_matching_transition = (cand_eval.get("spatial_score", 0.0) >= 0.95)
 
         # Immediate Confirmation Check
-        if (best_sim >= thresh_match or (has_matching_transition and best_sim >= 0.70)) and (margin >= ambig_margin or second_sim == 0.0):
+        if (best_sim >= thresh_match or (has_matching_transition and best_sim >= max(0.65, thresh_match - 0.05))) and (margin >= ambig_margin or second_sim == 0.0):
             # Confirm immediately!
             confirmed = self.journey_manager.confirm_association(
                 global_id=best_gid,
@@ -320,7 +338,7 @@ class AssociationManager:
                 return best_gid, "PENDING", best_sim, decision_data
 
         # PENDING Candidate Check (borderline or cross-view awaiting evidence)
-        elif (is_cross and best_sim >= thresh_cross) or (best_sim >= thresh_ambig) or (has_matching_transition and best_sim >= 0.60):
+        elif (is_cross and best_sim >= thresh_cross) or (best_sim >= thresh_ambig) or (has_matching_transition and best_sim >= 0.55):
             prev_cand = self.pending_candidate.get(key)
             if prev_cand == best_gid:
                 self.pending_counters[key] = self.pending_counters.get(key, 0) + 1
@@ -332,7 +350,7 @@ class AssociationManager:
             decision_data["pending_count"] = p_count
             decision_data["pending_threshold"] = pending_promote_frames
 
-            if p_count >= pending_promote_frames or (dom_view == "FRONT" and best_sim >= 0.72) or (has_matching_transition and best_sim >= 0.65):
+            if p_count >= pending_promote_frames or (dom_view == "FRONT" and best_sim >= max(0.68, thresh_match - 0.02)) or (has_matching_transition and best_sim >= max(0.60, thresh_match - 0.08)):
                 confirmed = self.journey_manager.confirm_association(
                     global_id=best_gid,
                     camera_id=camera_id,

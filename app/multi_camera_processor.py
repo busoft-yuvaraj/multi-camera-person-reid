@@ -452,6 +452,26 @@ class MultiCameraProcessor:
                 if gid:
                     active_global_ids.add(gid)
 
+        # Exclude GIDs actively visible in OTHER cameras right now (within 5 frames = 0.2s)
+        # Exception: Do not exclude an identity if they recently crossed a transition targeting this camera/zone (handoff)
+        cam_zone = state.get("zone", camera_id)
+        for other_cid, other_st in self.state.items():
+            if other_cid != camera_id:
+                for o_tid, o_last in other_st.get("last_seen_frame", {}).items():
+                    if (frame_idx - o_last) <= 5:
+                        o_gid = other_st.get("global_assignments", {}).get(o_tid)
+                        if o_gid:
+                            is_incoming = False
+                            if self.journey_manager:
+                                j_state = self.journey_manager.get_identity(o_gid)
+                                if j_state:
+                                    t_cam = getattr(j_state, "last_transition_target_camera", None)
+                                    t_zone = getattr(j_state, "last_transition_target_zone", None)
+                                    if t_cam == camera_id or t_zone == cam_zone:
+                                        is_incoming = True
+                            if not is_incoming:
+                                active_global_ids.add(o_gid)
+
         cam_zone = state.get("zone", camera_id)
         fps = state["cap"].get(cv2.CAP_PROP_FPS)
         fps = fps if (fps and fps > 0) else 30.0

@@ -140,6 +140,7 @@ def main():
     )
     candidate_filter = CandidateFilter(
         topology_gate=topology_gate,
+        
         temporal_gate=temporal_gate,
         spatial_gate=spatial_gate
     )

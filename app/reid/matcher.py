@@ -205,9 +205,10 @@ class GlobalMatcher:
 
         # Cross-view difficulty adjustment:
         # If cross-view (e.g. CCTV1 BACK -> CCTV2 SIDE), OSNet similarity is inherently lower.
-        # Calibrate effective ReID score according to difficulty factor for candidate evaluation
+        # Calibrate effective ReID score according to difficulty factor for candidate evaluation,
+        # but only if the raw similarity is above the noise floor (>= 0.58) to prevent false inflation of mismatches.
         effective_reid = reid_score
-        if is_cross and difficulty < 1.0:
+        if is_cross and difficulty < 1.0 and reid_score >= 0.58:
             effective_reid = min(1.0, reid_score / max(difficulty, 0.65))
 
         raw_composite = (w_reid * effective_reid) + (w_par * par_score) + (w_ctx * context_score)
@@ -304,9 +305,9 @@ class GlobalMatcher:
         # -------------------------------------------------------------
         # Phase 12: Decision Logic with PENDING State
         # -------------------------------------------------------------
-        thresh_match = float(self.config.get("threshold_match", 0.80))
-        thresh_ambig = float(self.config.get("threshold_ambiguous", 0.68))
-        thresh_cross = float(self.config.get("threshold_cross_view", 0.62))
+        thresh_match = float(self.config.get("threshold_match", 0.70))
+        thresh_ambig = float(self.config.get("threshold_ambiguous", 0.60))
+        thresh_cross = float(self.config.get("threshold_cross_view", 0.55))
         ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
 
         is_cross = best_details.get("is_cross_view", False)
@@ -381,9 +382,9 @@ class GlobalMatcher:
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         assignment_map = dict(zip(row_ind, col_ind))
 
-        thresh_match = float(self.config.get("threshold_match", 0.80))
-        thresh_ambig = float(self.config.get("threshold_ambiguous", 0.68))
-        thresh_cross = float(self.config.get("threshold_cross_view", 0.62))
+        thresh_match = float(self.config.get("threshold_match", 0.70))
+        thresh_ambig = float(self.config.get("threshold_ambiguous", 0.60))
+        thresh_cross = float(self.config.get("threshold_cross_view", 0.55))
         ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
 
         results = {}
