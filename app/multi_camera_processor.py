@@ -175,6 +175,11 @@ class MultiCameraProcessor:
             if not cap.isOpened():
                 logging.error(f"[{c_id}] FAILED to open video: '{v_path}'. Verify file exists and format is supported.")
 
+            c_fps = cap.get(cv2.CAP_PROP_FPS)
+            if not c_fps or c_fps <= 0 or np.isnan(c_fps):
+                c_fps = float(c_cfg.get("fps", 30.0))
+            start_offset = float(c_cfg.get("start_offset", c_cfg.get("offset_seconds", 0.0)))
+
             c_crop = c_cfg.get("crop")  # [x1, y1, x2, y2]
             
             # Setup ROI and transitions configs, auto-scaling if crop is defined
@@ -220,6 +225,11 @@ class MultiCameraProcessor:
                 "video_path": v_path,
                 "zone": c_zone,
                 "crop": c_crop,
+                "fps": float(c_fps),
+                "start_offset": float(start_offset),
+                "frame_count": 0,
+                "current_presentation_time": 0.0,
+                "current_shared_time": float(start_offset),
                 "model": YOLO(config["model_path"]), # Independent YOLO state per camera!
                 "banks": {},
                 "global_assignments": {},
@@ -233,6 +243,7 @@ class MultiCameraProcessor:
                 "reid_extractions": 0,
                 "global_ids_set": set(),
                 "last_seen_frame": {},
+                "last_seen_time": {},
                 "local_id_map": {},
                 "next_local_id": 1
             }
@@ -434,48 +445,56 @@ class MultiCameraProcessor:
                 if not in_zone:
                     valid_raw.append(d)
             raw_detections = valid_raw
+
+        # Apply track_only_inside_roi if configured for this camera
+        allowed_rois = self.config.get("cameras", {}).get(camera_id, {}).get("track_only_inside_roi", [])
+        if allowed_rois and camera_id in self.roi_detectors:
+            roi_det = self.roi_detectors[camera_id]
+            valid_tracks = []
+            for t in tracks:
+                fx, fy = (t[0] + t[2]) / 2.0, t[3]
+                in_roi = any(roi_det.is_point_in_roi((fx, fy), r_id) for r_id in allowed_rois)
+                if in_roi:
+                    valid_tracks.append(t)
+            tracks = valid_tracks
+
+            valid_raw = []
+            for d in raw_detections:
+                fx, fy = (d[0] + d[2]) / 2.0, d[3]
+                in_roi = any(roi_det.is_point_in_roi((fx, fy), r_id) for r_id in allowed_rois)
+                if in_roi:
+                    valid_raw.append(d)
+            raw_detections = valid_raw
             
         state["detections"] += len(tracks) + len(raw_detections)
-        state["active_tracks"] = len(tracks)
+        state["active_tracks"] += len(tracks)
+
+        # Camera presentation time and global shared timeline
+        state["frame_count"] += 1
+        fps = state.get("fps", 30.0)
+        presentation_time = float(state["frame_count"] - 1) / float(fps)
+        shared_time = presentation_time + state.get("start_offset", 0.0)
+        current_time = shared_time
+        state["current_presentation_time"] = presentation_time
+        state["current_shared_time"] = shared_time
                 
         # Current active track IDs in this frame
         current_track_ids = {int(t[4]) for t in tracks}
         for tid in current_track_ids:
             state["last_seen_frame"][tid] = frame_idx
+            state["last_seen_time"][tid] = current_time
 
-        # Find active global IDs in this camera (currently visible tracks + tracks within brief occlusion buffer)
-        occlusion_buffer_frames = int(self.config.get("occlusion_buffer_frames", 20))
-        active_global_ids = set()
-        for tid, last_seen in state["last_seen_frame"].items():
-            if (frame_idx - last_seen) <= occlusion_buffer_frames:
-                gid = state["global_assignments"].get(tid)
-                if gid:
-                    active_global_ids.add(gid)
-
-        # Exclude GIDs actively visible in OTHER cameras right now (within 5 frames = 0.2s)
-        # Exception: Do not exclude an identity if they recently crossed a transition targeting this camera/zone (handoff)
+        # Exclude GIDs actively visible in OTHER cameras right now on shared timeline
         cam_zone = state.get("zone", camera_id)
+        other_active_gids = set()
         for other_cid, other_st in self.state.items():
             if other_cid != camera_id:
-                for o_tid, o_last in other_st.get("last_seen_frame", {}).items():
-                    if (frame_idx - o_last) <= 5:
+                for o_tid, o_last_time in other_st.get("last_seen_time", {}).items():
+                    # Active within the last 0.50s of the shared timeline
+                    if abs(current_time - o_last_time) <= 0.50:
                         o_gid = other_st.get("global_assignments", {}).get(o_tid)
                         if o_gid:
-                            is_incoming = False
-                            if self.journey_manager:
-                                j_state = self.journey_manager.get_identity(o_gid)
-                                if j_state:
-                                    t_cam = getattr(j_state, "last_transition_target_camera", None)
-                                    t_zone = getattr(j_state, "last_transition_target_zone", None)
-                                    if t_cam == camera_id or t_zone == cam_zone:
-                                        is_incoming = True
-                            if not is_incoming:
-                                active_global_ids.add(o_gid)
-
-        cam_zone = state.get("zone", camera_id)
-        fps = state["cap"].get(cv2.CAP_PROP_FPS)
-        fps = fps if (fps and fps > 0) else 30.0
-        current_time = float(frame_idx) / float(fps)
+                            other_active_gids.add(o_gid)
 
         # Handle tracks that disappeared (> track_lost_frames, default 60 frames)
         track_lost_frames = int(self.config.get("track_lost_frames", 60))
@@ -487,13 +506,44 @@ class MultiCameraProcessor:
                     self.journey_manager.on_track_lost(camera_id, cam_zone, tid, current_time, frame_idx)
                 state["global_assignments"].pop(tid, None)
                 state["last_seen_frame"].pop(tid, None)
+                state["last_seen_time"].pop(tid, None)
 
         # Periodic expiration check
         if self.journey_manager and frame_idx % 30 == 0:
             self.journey_manager.check_expirations(current_time, frame_idx)
 
+        # Sort tracks to resolve competing assignments principledly:
+        # 1. Already-confirmed tracks run first to anchor their identities.
+        # 2. Tracks ready for association are sorted by candidate match confidence (descending)
+        #    instead of arbitrary track order (avoiding arbitrary first-track-wins).
+        # 3. Tracks still collecting initial evidence run last.
+        confirm_frames = int(self.config.get("reid_confirm_frames", 3))
+        def track_sort_key(t):
+            tid = int(t[4])
+            if tid in state["global_assignments"]:
+                return (2, 1.0)
+            if tid in state["banks"]:
+                embs = state["banks"][tid].get_all_embeddings()
+                if len(embs) >= confirm_frames:
+                    if self.matcher:
+                        proto, _, _, _ = self.matcher._extract_track_prototypes(embs)
+                        if proto is not None and self.gallery:
+                            identities = self.gallery.get_identities()
+                            if identities:
+                                best_sim = max([
+                                    float(np.dot(proto, e.get("embedding", e)))
+                                    for ident in identities.values()
+                                    for e in (ident.get_all_embeddings() if hasattr(ident, "get_all_embeddings") else ident.get("embeddings", []))
+                                    if e is not None
+                                ], default=0.0)
+                                return (1, float(best_sim))
+                    return (1, 0.0)
+            return (0, 0.0)
+
+        sorted_tracks = sorted(tracks, key=track_sort_key, reverse=True)
+
         # Process each active track
-        for t in tracks:
+        for t in sorted_tracks:
             x1, y1, x2, y2, track_id, conf, cls = t
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
             track_id = int(track_id)
@@ -579,6 +629,13 @@ class MultiCameraProcessor:
                 if track_id in state["banks"] and self.association_manager is not None:
                     bank_embeddings = state["banks"][track_id].get_all_embeddings()
                     if bank_embeddings:
+                        # Exclude GIDs occupied by OTHER active tracks visible in this camera's current frame
+                        same_cam_occupied = {
+                            existing_gid for other_tid, existing_gid in state["global_assignments"].items()
+                            if other_tid in current_track_ids and other_tid != track_id
+                        }
+                        active_camera_gids = same_cam_occupied.union(other_active_gids)
+
                         assigned_gid, assoc_status, sim, details = self.association_manager.associate_track(
                             camera_id=camera_id,
                             zone=cam_zone,
@@ -586,19 +643,26 @@ class MultiCameraProcessor:
                             bank_embeddings=bank_embeddings,
                             current_time=current_time,
                             frame_idx=frame_idx,
-                            active_camera_gids=active_global_ids
+                            active_camera_gids=active_camera_gids
                         )
                         if assoc_status == "MATCHED" and assigned_gid:
-                            # Enforce 1-to-1 mapping per camera: evict assigned_gid from any other track in this camera
+                            # Reacquisition / cleanup: if an old lost track in this camera held this GID, clean it up
                             for other_tid, existing_gid in list(state["global_assignments"].items()):
                                 if existing_gid == assigned_gid and other_tid != track_id:
                                     state["global_assignments"].pop(other_tid, None)
                                     state["match_status"].pop(other_tid, None)
 
+                            # Clean up from any OTHER cameras if they had this GID assigned
+                            for other_cid, other_st in self.state.items():
+                                if other_cid != camera_id:
+                                    for other_tid, existing_gid in list(other_st.get("global_assignments", {}).items()):
+                                        if existing_gid == assigned_gid:
+                                            other_st["global_assignments"].pop(other_tid, None)
+                                            other_st.get("match_status", {}).pop(other_tid, None)
+
                             state["global_assignments"][track_id] = assigned_gid
                             state["global_ids_set"].add(assigned_gid)
                             state["match_status"][track_id] = "MATCHED"
-                            active_global_ids.add(assigned_gid)
                             self._sync_global_id_assignment(camera_id, track_id, assigned_gid)
                             update_min_q = float(self.config.get("gallery_update_min_quality", 0.60))
                             if added and quality >= update_min_q:

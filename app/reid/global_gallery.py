@@ -216,6 +216,10 @@ class GlobalGallery:
             self.save()
             return True
             
+    def get_identity(self, gid: str) -> Optional[Any]:
+        with self.lock:
+            return self.identities.get(gid)
+
     def get_identities(self) -> Dict[str, Any]:
         with self.lock:
             return dict(self.identities)

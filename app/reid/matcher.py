@@ -204,12 +204,10 @@ class GlobalMatcher:
         w_ctx = weight_context / total_weight
 
         # Cross-view difficulty adjustment:
-        # If cross-view (e.g. CCTV1 BACK -> CCTV2 SIDE), OSNet similarity is inherently lower.
-        # Calibrate effective ReID score according to difficulty factor for candidate evaluation,
-        # but only if the raw similarity is above the noise floor (>= 0.58) to prevent false inflation of mismatches.
+        # Keep raw cosine similarity uninflated. Plausible cross-view candidates are
+        # evaluated using threshold_cross_view and multi-frame PENDING confirmation,
+        # preventing false inflation of weak similarity into a high-confidence MATCH.
         effective_reid = reid_score
-        if is_cross and difficulty < 1.0 and reid_score >= 0.58:
-            effective_reid = min(1.0, reid_score / max(difficulty, 0.65))
 
         raw_composite = (w_reid * effective_reid) + (w_par * par_score) + (w_ctx * context_score)
 

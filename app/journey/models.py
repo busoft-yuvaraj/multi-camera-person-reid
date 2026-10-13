@@ -53,6 +53,7 @@ class GlobalIdentityState:
     last_seen_timestamp: float = 0.0
     
     # Transition metadata
+    last_transition_source_camera: Optional[str] = None
     last_transition_id: Optional[str] = None
     last_transition_timestamp: Optional[float] = None
     last_transition_direction: Optional[str] = None

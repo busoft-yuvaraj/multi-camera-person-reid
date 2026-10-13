@@ -33,14 +33,20 @@ class JourneyManager:
         # Currently active track assignments: (camera_id, local_track_id) -> gid
         self.active_tracks: Dict[Tuple[str, int], str] = {}
         
-        # Reverse mapping: gid -> (camera_id, local_track_id)
+        # Reverse mapping: gid -> (camera_id, local_track_id) (latest primary)
         self.gid_to_active_track: Dict[str, Tuple[str, int]] = {}
+        
+        # Per-camera active mappings: gid -> {camera_id: local_track_id}
+        self.gid_to_camera_tracks: Dict[str, Dict[str, int]] = {}
         
         # Buffer of pending events for unconfirmed tracks: (camera_id, local_track_id) -> list of JourneyEvents
         self.pending_events: Dict[Tuple[str, int], List[JourneyEvent]] = {}
 
     def get_identity(self, global_id: str) -> Optional[GlobalIdentityState]:
         return self.identities.get(global_id)
+
+    def get_active_global_id(self, camera_id: str, local_track_id: int) -> Optional[str]:
+        return self.active_tracks.get((camera_id, local_track_id))
 
     def get_all_identities(self) -> Dict[str, GlobalIdentityState]:
         return dict(self.identities)
@@ -161,9 +167,8 @@ class JourneyManager:
                     return False
                 else:
                     logging.info(
-                        f"[JOURNEY] Transitioning {global_id} from {active_cam} (Track {active_tid}) to {camera_id} (Track {local_track_id})"
+                        f"[JOURNEY] Cross-camera association: {global_id} in {camera_id} (Track {local_track_id}) while also tracked in {active_cam} (Track {active_tid})"
                     )
-                    self.active_tracks.pop((active_cam, active_tid), None)
 
         is_reacquisition = (state.current_camera != camera_id) or (state.status in [IdentityStatus.TEMPORARILY_LOST, IdentityStatus.REACQUIRABLE])
 
@@ -178,6 +183,14 @@ class JourneyManager:
         state.current_local_track_id = local_track_id
         state.last_seen_timestamp = timestamp
         state.status = IdentityStatus.ACTIVE
+
+        # Consume transition handoff upon successful cross-camera confirmation
+        if is_reacquisition:
+            state.last_transition_id = None
+            state.last_transition_direction = None
+            state.last_transition_timestamp = None
+            state.last_transition_target_camera = None
+            state.last_transition_target_zone = None
 
         self._set_active_mapping(camera_id, local_track_id, global_id)
 
@@ -235,12 +248,23 @@ class JourneyManager:
         key = (camera_id, local_track_id)
         gid = self.active_tracks.pop(key, None)
         if gid:
+            if gid in self.gid_to_camera_tracks and camera_id in self.gid_to_camera_tracks[gid]:
+                if self.gid_to_camera_tracks[gid][camera_id] == local_track_id:
+                    self.gid_to_camera_tracks[gid].pop(camera_id, None)
+
             if self.gid_to_active_track.get(gid) == key:
-                self.gid_to_active_track.pop(gid, None)
+                if gid in self.gid_to_camera_tracks and self.gid_to_camera_tracks[gid]:
+                    other_cam, other_tid = next(iter(self.gid_to_camera_tracks[gid].items()))
+                    self.gid_to_active_track[gid] = (other_cam, other_tid)
+                else:
+                    self.gid_to_active_track.pop(gid, None)
+
             state = self.identities.get(gid)
             if state:
-                state.status = IdentityStatus.TEMPORARILY_LOST
-                state.last_seen_timestamp = timestamp
+                has_other_active = bool(gid in self.gid_to_camera_tracks and self.gid_to_camera_tracks[gid])
+                if not has_other_active:
+                    state.status = IdentityStatus.TEMPORARILY_LOST
+                    state.last_seen_timestamp = timestamp
 
                 evt = JourneyEvent(
                     event="CAMERA_DISAPPEARED",
@@ -285,6 +309,7 @@ class JourneyManager:
 
         if gid and gid in self.identities:
             state = self.identities[gid]
+            state.last_transition_source_camera = event.camera_id
             state.last_transition_id = event.transition_id
             state.last_transition_timestamp = event.timestamp
             state.last_transition_direction = event.direction
@@ -365,18 +390,24 @@ class JourneyManager:
     def _set_active_mapping(self, camera_id: str, local_track_id: int, global_id: str):
         key = (camera_id, local_track_id)
         
-        # If this track was previously mapped to an old GID, unmap that old GID
+        # 1. If this track was previously mapped to an old GID, unmap that old GID for this camera
         old_gid = self.active_tracks.get(key)
         if old_gid and old_gid != global_id:
-            if self.gid_to_active_track.get(old_gid) == key:
-                self.gid_to_active_track.pop(old_gid, None)
+            if old_gid in self.gid_to_camera_tracks and camera_id in self.gid_to_camera_tracks[old_gid]:
+                if self.gid_to_camera_tracks[old_gid][camera_id] == local_track_id:
+                    self.gid_to_camera_tracks[old_gid].pop(camera_id, None)
                 
-        # If this GID was previously mapped to an old track, unmap that old track
-        old_key = self.gid_to_active_track.get(global_id)
-        if old_key and old_key != key:
-            self.active_tracks.pop(old_key, None)
+        # 2. In THIS camera, if this GID was previously mapped to another track in this camera, unmap it
+        if global_id in self.gid_to_camera_tracks and camera_id in self.gid_to_camera_tracks[global_id]:
+            old_tid = self.gid_to_camera_tracks[global_id][camera_id]
+            if old_tid != local_track_id:
+                self.active_tracks.pop((camera_id, old_tid), None)
             
+        # 3. Store mapping independently per camera; do not unmap other cameras!
         self.active_tracks[key] = global_id
+        if global_id not in self.gid_to_camera_tracks:
+            self.gid_to_camera_tracks[global_id] = {}
+        self.gid_to_camera_tracks[global_id][camera_id] = local_track_id
         self.gid_to_active_track[global_id] = key
 
     def _transfer_pending_events(self, camera_id: str, local_track_id: int, global_id: str):
@@ -391,6 +422,7 @@ class JourneyManager:
                 
                 # Apply transition / ROI attributes to state retroactively if present
                 if evt.event == "TRANSITION_CROSSED":
+                    state.last_transition_source_camera = evt.camera_id
                     state.last_transition_id = evt.details.get("transition_id")
                     state.last_transition_timestamp = evt.timestamp
                     state.last_transition_direction = evt.details.get("direction")

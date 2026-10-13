@@ -22,7 +22,8 @@ class TemporalGate:
         self,
         source_camera: Optional[str],
         target_camera: str,
-        elapsed_seconds: float
+        elapsed_seconds: float,
+        has_validated_transition: bool = False
     ) -> Tuple[bool, float, str]:
         """
         Evaluates elapsed time against constraints.
@@ -51,6 +52,10 @@ class TemporalGate:
         max_s = float(constraint.get("max_seconds", self.default_max_seconds))
 
         if elapsed_seconds < min_s:
+            # If a validated transition event explicitly connects these cameras,
+            # near-zero elapsed time (e.g. boundary handoff in synchronized feeds) is legitimate handoff.
+            if has_validated_transition:
+                return True, 0.90, f"TRANSITION_HANDOFF (Validated transition from {source_camera} to {target_camera}, {elapsed_seconds:.2f}s)"
             return False, 0.0, f"TOO_FAST ({elapsed_seconds:.1f}s < {min_s}s)"
 
         if elapsed_seconds > max_s:

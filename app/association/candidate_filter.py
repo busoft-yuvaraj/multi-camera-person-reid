@@ -60,6 +60,8 @@ class CandidateFilter:
                 last_trans = identity.last_transition_id
                 last_dir = identity.last_transition_direction
                 last_trans_time = identity.last_transition_timestamp or last_seen
+                last_trans_target_cam = identity.last_transition_target_camera
+                last_trans_target_zone = identity.last_transition_target_zone
                 status = identity.status
             elif isinstance(identity, dict):
                 last_cam = identity.get("current_camera") or identity.get("last_camera")
@@ -68,6 +70,8 @@ class CandidateFilter:
                 last_trans = identity.get("last_transition_id")
                 last_dir = identity.get("last_transition_direction")
                 last_trans_time = float(identity.get("last_transition_timestamp", last_seen))
+                last_trans_target_cam = identity.get("last_transition_target_camera")
+                last_trans_target_zone = identity.get("last_transition_target_zone")
                 status = identity.get("status", "ACTIVE")
             else:
                 last_cam = getattr(identity, "last_camera", None)
@@ -76,6 +80,8 @@ class CandidateFilter:
                 last_trans = None
                 last_dir = None
                 last_trans_time = last_seen
+                last_trans_target_cam = None
+                last_trans_target_zone = None
                 status = "ACTIVE"
 
             # Reacquisition timing constraints are evaluated downstream by TemporalGate
@@ -88,6 +94,19 @@ class CandidateFilter:
                 rejected[gid] = reason
                 continue
 
+            # Check if this candidate has a validated transition handoff to current_camera
+            has_validated_trans = False
+            time_since_trans = max(0.0, current_time - last_trans_time) if last_trans_time > 0.0 else 999.0
+            if last_trans and last_cam != current_camera and time_since_trans < 45.0:
+                if last_trans_target_cam == current_camera or (last_trans_target_zone and last_trans_target_zone == current_zone):
+                    has_validated_trans = True
+                elif hasattr(self.spatial_gate, "rules") and self.spatial_gate.rules:
+                    for rule in self.spatial_gate.rules:
+                        if rule.get("from_camera") == last_cam and rule.get("transition") == last_trans:
+                            if current_camera in rule.get("candidate_zones", []):
+                                has_validated_trans = True
+                                break
+
             # -------------------------------------------------------------
             # 2. TEMPORAL GATE (Transit & Occlusion Bounds)
             # -------------------------------------------------------------
@@ -95,7 +114,8 @@ class CandidateFilter:
             is_temp_valid, temp_score, temp_reason = self.temporal_gate.evaluate(
                 source_camera=last_cam,
                 target_camera=current_camera,
-                elapsed_seconds=elapsed
+                elapsed_seconds=elapsed,
+                has_validated_transition=has_validated_trans
             )
 
             if not is_temp_valid:
@@ -105,13 +125,15 @@ class CandidateFilter:
             # -------------------------------------------------------------
             # 3. SPATIAL GATE (Evidence Weighting)
             # -------------------------------------------------------------
-            time_since_trans = max(0.0, current_time - last_trans_time) if last_trans_time > 0.0 else 999.0
             is_spatial_valid, spatial_score, spatial_reason = self.spatial_gate.evaluate(
                 source_camera=last_cam,
                 current_camera=current_camera,
                 last_transition_id=last_trans,
                 last_transition_direction=last_dir,
-                time_since_transition=time_since_trans
+                time_since_transition=time_since_trans,
+                target_camera=last_trans_target_cam,
+                source_last_seen=last_seen,
+                trans_timestamp=last_trans_time
             )
 
             if not is_spatial_valid:

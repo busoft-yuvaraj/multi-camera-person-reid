@@ -6,7 +6,7 @@ cameras:
   waiting_lobby:
     camera_id: "waiting_lobby"
     zone: "waiting_lobby"
-    video_path: "cctv_samples/test3/waitinglobbyTrim.mp4"
+    video_path: "cctv_samples/test6/test6-w.mp4"
     roi: {}
     transitions:
       lobby_exit:
@@ -21,16 +21,17 @@ cameras:
   pantry:
     camera_id: "pantry"
     zone: "pantry"
-    video_path: "cctv_samples/test3/pantryTTrim.mp4"
+    video_path: "cctv_samples/test6/test6-pantry.mp4"
     crop: [0, 0, 720, 720]
+    track_only_inside_roi: ["sink"]
     roi:
       sink:
         enabled: true
         type: "polygon"
         points:
           - [31, 17]
-          - [530, 5]
-          - [546, 521]
+          - [528, 5]
+          - [530, 521]
           - [49, 532]
     transitions:
       pantry_yellow:
@@ -46,14 +47,14 @@ cameras:
         type: "line"
         points:
           start: [65, 502]
-          end: [536, 490]
+          end: [530, 490]
         target_camera: "passage"
         target_zone: "passage"
 
   passage:
     camera_id: "passage"
     zone: "passage"
-    video_path: "cctv_samples/test3/passageTrim.mp4"
+    video_path: "cctv_samples/test6/test6-p.mp4"
     roi: {}
     transitions:
       passage_transition:
