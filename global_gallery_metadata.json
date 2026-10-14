@@ -1,0 +1,20 @@
+{
+    "Person_001": {
+        "tracks": [
+            {
+                "camera_id": "pantry",
+                "track_id": 3
+            }
+        ],
+        "cameras_seen": [
+            "pantry"
+        ],
+        "status": "CONFIRMED",
+        "num_embeddings": 1,
+        "par_profile": {
+            "upper_color": "unknown",
+            "lower_color": "unknown",
+            "par_count": 0
+        }
+    }
+}

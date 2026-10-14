@@ -16,7 +16,7 @@ class TrackEmbeddingBank:
             "UNKNOWN": []
         }
         
-    def add_embedding(self, embedding, quality, frame_id, viewpoint, par_features, quality_metadata):
+    def add_embedding(self, embedding, quality, frame_id, viewpoint, par_features, quality_metadata, par_attributes=None):
         view_bank = self.banks.get(viewpoint, self.banks["UNKNOWN"])
         
         entry = {
@@ -27,6 +27,7 @@ class TrackEmbeddingBank:
             "track_id": self.track_id,
             "viewpoint": viewpoint,
             "par_features": par_features,
+            "par_attributes": par_attributes,
             "metadata": quality_metadata
         }
         

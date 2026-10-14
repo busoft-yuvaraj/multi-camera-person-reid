@@ -1,0 +1,12 @@
+# ==========================================================
+# ByteTrack tracker configuration
+# (consumed by ultralytics' model.track(tracker=...) call)
+# ==========================================================
+tracker_type: bytetrack   # tracker type: bytetrack
+
+track_high_thresh: 0.5    # threshold for the first association
+track_low_thresh: 0.1     # threshold for the second association
+new_track_thresh: 0.6     # threshold to init a new track if detection doesn't match any track
+track_buffer: 30          # buffer (in frames) to keep a lost track before removing it
+match_thresh: 0.8         # matching threshold for association
+fuse_score: true          # fuse confidence scores with IoU distances before matching

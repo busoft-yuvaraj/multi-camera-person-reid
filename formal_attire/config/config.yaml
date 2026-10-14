@@ -1,0 +1,40 @@
+# ==========================================================
+# Formal Attire Detection - Application Configuration
+# ==========================================================
+
+model:
+  # Path to your trained YOLO weights
+  weights_path: "models/best.pt"
+  confidence_threshold: 0.5
+  iou_threshold: 0.45
+  # "cpu", "cuda:0", "mps" (Apple Silicon), etc.
+  device: "cpu"
+
+tracker:
+  # ByteTrack configuration file (used by ultralytics' built-in tracker)
+  config_path: "config/bytetrack.yaml"
+  persist: true          # keep track IDs alive across frames
+
+video:
+  # 0 = default webcam, or path to a video file, or an RTSP/HTTP stream URL
+  source: 0
+  frame_width: 1280
+  frame_height: 720
+  fps: 30
+
+output:
+  save_dir: "outputs"
+  save_video: true
+  video_filename: "formal_attire_detection.mp4"
+  save_annotated_frames: false   # dump every Nth frame as an image too
+  frame_save_interval: 30        # only used if save_annotated_frames is true
+
+display:
+  show_live: true
+  window_name: "Formal Attire Detection"
+  draw_fps: true
+
+logging:
+  log_dir: "logs"
+  log_level: "INFO"        # DEBUG | INFO | WARNING | ERROR
+  log_filename: "app.log"

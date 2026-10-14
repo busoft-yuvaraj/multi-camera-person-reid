@@ -1,15 +1,51 @@
 import cv2
 import numpy as np
 import os
+import json
 import datetime
 import logging
+import copy
+from typing import Optional, Dict, List, Any, Set, Tuple
 
 from app.reid.quality import calculate_quality
 from app.reid.embedding_bank import TrackEmbeddingBank
 from ultralytics import YOLO
 
+from app.violation.line_crossing import LineCrossingDetector
+from app.violation.attire_smoother import AttireStabilityManager
+from app.violation.person_state import PersonStateManager
+from app.violation.route_policy import RoutePolicy
+from app.violation.evidence_manager import EvidenceManager
+from app.violation.violation_engine import ViolationEngine
+from app.violation.handwash_detector import HandwashDetector
+
+from app.events.transition_detector import TransitionDetector, TransitionEvent
+from app.events.roi_detector import RoiDetector, RoiEvent
+from app.association.association_manager import AssociationManager
+from app.journey.journey_manager import JourneyManager
+from app.journey.journey_store import JourneyStore
+
 class MultiCameraProcessor:
-    def __init__(self, cameras_info, output_path, config, extractor, par_extractor, pose_extractor, gallery, matcher):
+    def __init__(
+        self,
+        cameras_info,
+        output_path,
+        config,
+        extractor,
+        par_extractor,
+        pose_extractor,
+        gallery,
+        matcher,
+        attire_extractor=None,
+        violation_engine=None,
+        line_detectors=None,
+        attire_smoother=None,
+        person_state_manager=None,
+        handwash_detector=None,
+        association_manager=None,
+        journey_manager=None,
+        store=None
+    ):
         """
         cameras_info: list of dicts [{"camera_id": "cctv1", "video_path": "..."}, ...]
         """
@@ -26,37 +62,209 @@ class MultiCameraProcessor:
             os.makedirs(out_dir, exist_ok=True)
             
         self.config = config
-        self.config = config
         self.extractor = extractor
         self.par_extractor = par_extractor
         self.pose_extractor = pose_extractor
+        self.attire_extractor = attire_extractor
         self.gallery = gallery
         self.matcher = matcher
         
-        # State per camera
+        # Initialize Violation Detection Layer
+        self.violation_config = config.get("violation_detection", {})
+        self.violation_enabled = bool(self.violation_config.get("enabled", False))
+        
+        if self.violation_enabled:
+            cam_cfgs = self.violation_config.get("cameras", {})
+            self.line_detectors = line_detectors or {}
+            for cam in cameras_info:
+                c_id = cam["camera_id"]
+                if c_id not in self.line_detectors and c_id in cam_cfgs:
+                    c_info = cam_cfgs[c_id]
+                    line_cfg = c_info.get("line", {})
+                    enabled = bool(line_cfg.get("enabled", False))
+                    start = line_cfg.get("start", [0, 0])
+                    end = line_cfg.get("end", [0, 0])
+                    color = tuple(line_cfg.get("color", [0, 0, 255]))
+                    self.line_detectors[c_id] = LineCrossingDetector(
+                        camera_id=c_id,
+                        line_start=tuple(start),
+                        line_end=tuple(end),
+                        enabled=enabled,
+                        color=color
+                    )
+            
+            attire_cfg = self.violation_config.get("attire", {})
+            self.attire_smoother = attire_smoother or AttireStabilityManager(
+                history_size=attire_cfg.get("history_size", 10),
+                minimum_confidence=attire_cfg.get("minimum_confidence", 0.70),
+                prediction_interval=attire_cfg.get("prediction_interval", 5)
+            )
+            
+            self.person_state_manager = person_state_manager or PersonStateManager(camera_configs=cam_cfgs)
+            self.route_policy = RoutePolicy(camera_configs=cam_cfgs)
+            
+            ev_cfg = self.violation_config.get("evidence", {})
+            self.evidence_manager = EvidenceManager(
+                output_dir=ev_cfg.get("output_dir", "output/violations"),
+                enabled=bool(ev_cfg.get("enabled", True)),
+                save_image=bool(ev_cfg.get("save_image", True)),
+                save_metadata=bool(ev_cfg.get("save_metadata", True))
+            )
+            
+            self.violation_engine = violation_engine or ViolationEngine(
+                config=self.violation_config,
+                route_policy=self.route_policy,
+                evidence_manager=self.evidence_manager,
+                person_state_manager=self.person_state_manager
+            )
+        else:
+            self.line_detectors = {}
+            self.attire_smoother = None
+            self.person_state_manager = None
+            self.route_policy = None
+            self.evidence_manager = None
+            self.violation_engine = None
+        
+        # Initialize Handwash Detection Layer
+        hw_cfg = config.get("handwashing", {})
+        if handwash_detector is not None:
+            self.handwash_detector = handwash_detector
+        elif hw_cfg.get("enabled", True):
+            try:
+                import torch
+                dev = "cuda" if torch.cuda.is_available() else "cpu"
+            except Exception:
+                dev = "cpu"
+            self.handwash_detector = HandwashDetector(config=hw_cfg, device=dev)
+        else:
+            self.handwash_detector = None
+        
+        self.association_manager = association_manager
+        self.journey_manager = journey_manager
+        self.store = store
+        self.phase1_mode = bool(config.get("phase1_mode", True) or (association_manager is not None))
+
+        # State & Detectors per camera
+        self.transition_detectors = {}
+        self.roi_detectors = {}
         self.state = {}
+        cam_cfgs = self.config.get("cameras", {})
         for cam in cameras_info:
-            self.state[cam["camera_id"]] = {
-                "cap": cv2.VideoCapture(cam["video_path"]),
+            c_id = cam["camera_id"]
+            c_cfg = cam_cfgs.get(c_id, {})
+            c_zone = c_cfg.get("zone", c_id)
+            v_path = cam.get("video_path", "")
+            if not os.path.exists(v_path):
+                candidates = [
+                    v_path.replace("test_2", "test2"),
+                    v_path.replace("test2", "test_2"),
+                    v_path.replace("passage1", "passage_1"),
+                    v_path.replace("passage_1", "passage1"),
+                    v_path.replace("pantry", "panty"),
+                    v_path.replace("panty", "pantry"),
+                    v_path.replace("test_2", "test2").replace("passage1", "passage_1"),
+                    v_path.replace("test2", "test_2").replace("passage_1", "passage1"),
+                ]
+                for cand_path in candidates:
+                    if os.path.exists(cand_path):
+                        logging.warning(f"[{c_id}] Video '{v_path}' not found, falling back to '{cand_path}'")
+                        v_path = cand_path
+                        break
+
+            cap = cv2.VideoCapture(v_path)
+            if not cap.isOpened():
+                logging.error(f"[{c_id}] FAILED to open video: '{v_path}'. Verify file exists and format is supported.")
+
+            c_fps = cap.get(cv2.CAP_PROP_FPS)
+            if not c_fps or c_fps <= 0 or np.isnan(c_fps):
+                c_fps = float(c_cfg.get("fps", 30.0))
+            start_offset = float(c_cfg.get("start_offset", c_cfg.get("offset_seconds", 0.0)))
+
+            c_crop = c_cfg.get("crop")  # [x1, y1, x2, y2]
+            
+            # Setup ROI and transitions configs, auto-scaling if crop is defined
+            roi_cfg = copy.deepcopy(c_cfg.get("roi", {}))
+            trans_cfg = copy.deepcopy(c_cfg.get("transitions", {}))
+            if c_crop:
+                cap_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 1280
+                cap_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 720
+                cx1, cy1, cx2, cy2 = c_crop
+                cw = max(1, cx2 - cx1)
+                ch = max(1, cy2 - cy1)
+                sx = cap_w / float(cw)
+                sy = cap_h / float(ch)
+
+                for roi_id, r_info in roi_cfg.items():
+                    if "points" in r_info:
+                        r_info["points"] = [
+                            [int(round((pt[0] - cx1) * sx)), int(round((pt[1] - cy1) * sy))]
+                            for pt in r_info["points"]
+                        ]
+                for trans_id, t_info in trans_cfg.items():
+                    if "points" in t_info:
+                        pts = t_info["points"]
+                        if "start" in pts and "end" in pts:
+                            pts["start"] = [int(round((pts["start"][0] - cx1) * sx)), int(round((pts["start"][1] - cy1) * sy))]
+                            pts["end"] = [int(round((pts["end"][0] - cx1) * sx)), int(round((pts["end"][1] - cy1) * sy))]
+
+            self.transition_detectors[c_id] = TransitionDetector(
+                camera_id=c_id,
+                zone=c_zone,
+                transitions_config=trans_cfg,
+                cooldown_frames=int(config.get("transition_cooldown_frames", 15))
+            )
+            self.roi_detectors[c_id] = RoiDetector(
+                camera_id=c_id,
+                zone=c_zone,
+                roi_config=roi_cfg,
+                debounce_frames=int(config.get("roi_debounce_frames", 3))
+            )
+
+            self.state[c_id] = {
+                "cap": cap,
+                "video_path": v_path,
+                "zone": c_zone,
+                "crop": c_crop,
+                "fps": float(c_fps),
+                "start_offset": float(start_offset),
+                "frame_count": 0,
+                "current_presentation_time": 0.0,
+                "current_shared_time": float(start_offset),
                 "model": YOLO(config["model_path"]), # Independent YOLO state per camera!
                 "banks": {},
                 "global_assignments": {},
                 "match_status": {},
+                "attire_assignments": {},
+                "attire_history": {},
                 "last_frame": None,
                 "finished": False,
                 "detections": 0,
                 "active_tracks": 0,
                 "reid_extractions": 0,
                 "global_ids_set": set(),
-                "no_match_counters": {},
-                "hysteresis_counters": {},
-                "hysteresis_candidate": {},
-                "last_seen_frame": {}
+                "last_seen_frame": {},
+                "last_seen_time": {},
+                "local_id_map": {},
+                "next_local_id": 1
             }
             
         self.running = True
 
-    def run(self):
+    def _sync_global_id_assignment(self, camera_id: str, track_id: int, gid: str):
+        """
+        Synchronizes Global ID assignment with PersonStateManager and HandwashDetector.
+        Preserves established handwash state and links local track.
+        """
+        if not gid or str(gid).upper() in ["PENDING", "AMBIGUOUS", "UNKNOWN"]:
+            return
+        if self.person_state_manager:
+            self.person_state_manager.link_track(camera_id, track_id, gid)
+            if self.handwash_detector:
+                t_hw = self.handwash_detector.get_status(track_id)
+                if t_hw != "UNKNOWN":
+                    self.person_state_manager.update_handwash_status(gid, t_hw)
+
+    def run(self, max_frames: Optional[int] = None):
         # Validate cameras
         active_cameras = []
         for cam_id, state in self.state.items():
@@ -78,12 +286,22 @@ class MultiCameraProcessor:
         
         # We will stack horizontally, cctv1 processed and cctv2 processed.
         out_w = w * len(self.cameras_info)
-        out = cv2.VideoWriter(self.output_path, cv2.VideoWriter_fourcc(*'avc1'), fps, (out_w, h))
+        out_fps = fps if fps > 0 else 30
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        out = cv2.VideoWriter(self.output_path, fourcc, out_fps, (out_w, h))
+        if not out.isOpened():
+            fourcc = cv2.VideoWriter_fourcc(*'XVID')
+            out = cv2.VideoWriter(self.output_path, fourcc, out_fps, (out_w, h))
         
         cv2.namedWindow("Multi-Camera Tracker", cv2.WINDOW_NORMAL)
         
         frame_idx = 0
+        if max_frames is None:
+            max_frames = self.config.get("max_frames")
         while self.running:
+            if max_frames and frame_idx >= max_frames:
+                logging.info(f"Reached max_frames limit: {max_frames}. Ending processing.")
+                break
             all_finished = True
             display_frames = []
             
@@ -98,20 +316,32 @@ class MultiCameraProcessor:
                     else:
                         all_finished = False
                         
+                        # Apply camera crop & zoom if configured
+                        if state.get("crop"):
+                            cx1, cy1, cx2, cy2 = state["crop"]
+                            frame = frame[cy1:cy2, cx1:cx2]
+                            frame = cv2.resize(frame, (w, h))
+
                         # Process frame
                         frame = self._process_frame(cam_id, frame, frame_idx, w, h)
                         state["last_frame"] = frame.copy()
                         
-                        # Add camera name overlay
-                        cv2.putText(state["last_frame"], f"Camera: {cam_id}", (20, 40), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 255), 3)
+                        # Add camera name and zone overlay
+                        c_zone_name = state.get("zone", cam_id).upper()
+                        cv2.putText(state["last_frame"], f"Camera: {cam_id} | Zone: {c_zone_name}", (20, 40), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
                 
                 # If finished, we just use the last frame (frozen)
                 if state["last_frame"] is not None:
                     display_frames.append(state["last_frame"])
                 else:
-                    # Never read a single frame, just put black
-                    display_frames.append(np.zeros((h, w, 3), dtype=np.uint8))
+                    # Never read a single frame (camera failed or offline)
+                    placeholder = np.zeros((h, w, 3), dtype=np.uint8)
+                    cv2.putText(placeholder, f"CAMERA OFFLINE: {cam_id}", (50, h // 2),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                    cv2.putText(placeholder, f"Path: {state.get('video_path', '')}", (50, (h // 2) + 40),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+                    display_frames.append(placeholder)
             
             if all_finished:
                 break
@@ -142,10 +372,13 @@ class MultiCameraProcessor:
             combined_frame = np.hstack(display_frames)
             out.write(combined_frame)
             
-            cv2.imshow("Multi-Camera Tracker", combined_frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                self.running = False
-                break
+            try:
+                cv2.imshow("Multi-Camera Tracker", combined_frame)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    self.running = False
+                    break
+            except Exception:
+                pass
                 
         # Cleanup
         for state in self.state.values():
@@ -164,13 +397,12 @@ class MultiCameraProcessor:
             tracker=self.config.get("tracker_config", "botsort.yaml"), 
             persist=True, 
             verbose=False,
-            conf=0.10,
+            conf=self.config.get("detection_confidence", 0.25),
             imgsz=self.config.get("imgsz", 1280)
         )
         
-        # ADDED: User requested debug logging
         result = results[0]
-        logging.info(f"{camera_id.upper()}: boxes={len(result.boxes)}, track_ids={result.boxes.id}")
+        logging.debug(f"{camera_id.upper()}: boxes={len(result.boxes)}, track_ids={result.boxes.id}")
         
         tracks = []
         raw_detections = []
@@ -180,11 +412,16 @@ class MultiCameraProcessor:
             confs = results[0].boxes.conf.cpu().numpy()
             clss = results[0].boxes.cls.cpu().numpy()
             
-            # If tracker assigned IDs, grab them
+            # If tracker assigned IDs, map raw global IDs to camera-local IDs to isolate tracker state
             if results[0].boxes.id is not None:
-                track_ids = results[0].boxes.id.cpu().numpy()
-                for b, tid, conf, cls in zip(boxes, track_ids, confs, clss):
-                    tracks.append([*b, tid, conf, cls])
+                raw_track_ids = results[0].boxes.id.cpu().numpy()
+                for b, r_tid, conf, cls in zip(boxes, raw_track_ids, confs, clss):
+                    r_tid = int(r_tid)
+                    if r_tid not in state["local_id_map"]:
+                        state["local_id_map"][r_tid] = state["next_local_id"]
+                        state["next_local_id"] += 1
+                    local_tid = state["local_id_map"][r_tid]
+                    tracks.append([*b, local_tid, conf, cls])
             else:
                 # If tracker failed to assign IDs, keep raw detections for debugging
                 for b, conf, cls in zip(boxes, confs, clss):
@@ -208,194 +445,331 @@ class MultiCameraProcessor:
                 if not in_zone:
                     valid_raw.append(d)
             raw_detections = valid_raw
+
+        # Apply track_only_inside_roi if configured for this camera
+        allowed_rois = self.config.get("cameras", {}).get(camera_id, {}).get("track_only_inside_roi", [])
+        if allowed_rois and camera_id in self.roi_detectors:
+            roi_det = self.roi_detectors[camera_id]
+            valid_tracks = []
+            for t in tracks:
+                fx, fy = (t[0] + t[2]) / 2.0, t[3]
+                in_roi = any(roi_det.is_point_in_roi((fx, fy), r_id) for r_id in allowed_rois)
+                if in_roi:
+                    valid_tracks.append(t)
+            tracks = valid_tracks
+
+            valid_raw = []
+            for d in raw_detections:
+                fx, fy = (d[0] + d[2]) / 2.0, d[3]
+                in_roi = any(roi_det.is_point_in_roi((fx, fy), r_id) for r_id in allowed_rois)
+                if in_roi:
+                    valid_raw.append(d)
+            raw_detections = valid_raw
             
         state["detections"] += len(tracks) + len(raw_detections)
-        state["active_tracks"] = len(tracks)
+        state["active_tracks"] += len(tracks)
+
+        # Camera presentation time and global shared timeline
+        state["frame_count"] += 1
+        fps = state.get("fps", 30.0)
+        presentation_time = float(state["frame_count"] - 1) / float(fps)
+        shared_time = presentation_time + state.get("start_offset", 0.0)
+        current_time = shared_time
+        state["current_presentation_time"] = presentation_time
+        state["current_shared_time"] = shared_time
                 
-        # Find all currently active Global IDs in this camera frame (including recently occluded tracks)
-        active_global_ids = set()
-        
-        # First update last seen frames for current tracks
-        for t in tracks:
-            track_id = int(t[4])
-            state["last_seen_frame"][track_id] = frame_idx
-            
-        # Build active GIDs from any track seen in the last 30 frames (to cover brief BoT-SORT occlusions)
-        for tid, last_frame in state["last_seen_frame"].items():
-            if frame_idx - last_frame <= 30:
-                if tid in state["global_assignments"]:
-                    active_global_ids.add(state["global_assignments"][tid])
-                    
-        for t in tracks:
+        # Current active track IDs in this frame
+        current_track_ids = {int(t[4]) for t in tracks}
+        for tid in current_track_ids:
+            state["last_seen_frame"][tid] = frame_idx
+            state["last_seen_time"][tid] = current_time
+
+        # Exclude GIDs actively visible in OTHER cameras right now on shared timeline
+        cam_zone = state.get("zone", camera_id)
+        other_active_gids = set()
+        for other_cid, other_st in self.state.items():
+            if other_cid != camera_id:
+                for o_tid, o_last_time in other_st.get("last_seen_time", {}).items():
+                    # Active within the last 0.50s of the shared timeline
+                    if abs(current_time - o_last_time) <= 0.50:
+                        o_gid = other_st.get("global_assignments", {}).get(o_tid)
+                        if o_gid:
+                            other_active_gids.add(o_gid)
+
+        # Handle tracks that disappeared (> track_lost_frames, default 60 frames)
+        track_lost_frames = int(self.config.get("track_lost_frames", 60))
+        for tid, l_frame in list(state["last_seen_frame"].items()):
+            if tid not in current_track_ids and (frame_idx - l_frame > track_lost_frames):
+                if camera_id in self.roi_detectors:
+                    self.roi_detectors[camera_id].on_track_lost(tid, frame_idx, current_time)
+                if self.journey_manager:
+                    self.journey_manager.on_track_lost(camera_id, cam_zone, tid, current_time, frame_idx)
+                state["global_assignments"].pop(tid, None)
+                state["last_seen_frame"].pop(tid, None)
+                state["last_seen_time"].pop(tid, None)
+
+        # Periodic expiration check
+        if self.journey_manager and frame_idx % 30 == 0:
+            self.journey_manager.check_expirations(current_time, frame_idx)
+
+        # Sort tracks to resolve competing assignments principledly:
+        # 1. Already-confirmed tracks run first to anchor their identities.
+        # 2. Tracks ready for association are sorted by candidate match confidence (descending)
+        #    instead of arbitrary track order (avoiding arbitrary first-track-wins).
+        # 3. Tracks still collecting initial evidence run last.
+        confirm_frames = int(self.config.get("reid_confirm_frames", 3))
+        def track_sort_key(t):
+            tid = int(t[4])
+            if tid in state["global_assignments"]:
+                return (2, 1.0)
+            if tid in state["banks"]:
+                embs = state["banks"][tid].get_all_embeddings()
+                if len(embs) >= confirm_frames:
+                    if self.matcher:
+                        proto, _, _, _ = self.matcher._extract_track_prototypes(embs)
+                        if proto is not None and self.gallery:
+                            identities = self.gallery.get_identities()
+                            if identities:
+                                best_sim = max([
+                                    float(np.dot(proto, e.get("embedding", e)))
+                                    for ident in identities.values()
+                                    for e in (ident.get_all_embeddings() if hasattr(ident, "get_all_embeddings") else ident.get("embeddings", []))
+                                    if e is not None
+                                ], default=0.0)
+                                return (1, float(best_sim))
+                    return (1, 0.0)
+            return (0, 0.0)
+
+        sorted_tracks = sorted(tracks, key=track_sort_key, reverse=True)
+
+        # Process each active track
+        for t in sorted_tracks:
             x1, y1, x2, y2, track_id, conf, cls = t
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
             track_id = int(track_id)
-            
-            if self.config["reid_enabled"] and frame_idx % self.config["reid_interval"] == 0:
-                crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+            crop = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+
+            # Event Detection: ROI
+            if camera_id in self.roi_detectors:
+                roi_events = self.roi_detectors[camera_id].check_rois(
+                    local_track_id=track_id,
+                    bbox=(x1, y1, x2, y2),
+                    frame_idx=frame_idx,
+                    timestamp=current_time,
+                    global_id=state["global_assignments"].get(track_id)
+                )
+                for revt in roi_events:
+                    if self.journey_manager:
+                        self.journey_manager.record_roi_event(revt)
+                        logging.info(f"[ROI] Track {track_id} in {camera_id}: {revt.event} on {revt.roi_id}")
+
+            # Event Detection: Transition Lines
+            if camera_id in self.transition_detectors:
+                trans_events = self.transition_detectors[camera_id].check_transitions(
+                    local_track_id=track_id,
+                    bbox=(x1, y1, x2, y2),
+                    frame_idx=frame_idx,
+                    timestamp=current_time,
+                    global_id=state["global_assignments"].get(track_id)
+                )
+                for tevt in trans_events:
+                    if self.journey_manager:
+                        self.journey_manager.record_transition(tevt)
+                        logging.info(f"[TRANSITION] Track {track_id} in {camera_id}: crossed {tevt.transition_id} ({tevt.direction})")
+
+            # ReID Feature Extraction & Bank Update
+            if self.config.get("reid_enabled", True) and frame_idx % self.config.get("reid_interval", 3) == 0:
+                added = False
+                quality = 0.0
                 if crop.size > 0:
                     quality, accepted, reason, metadata = calculate_quality(
                         crop, conf, 
-                        self.config["min_reid_confidence"],
-                        self.config["min_reid_width"],
-                        self.config["min_reid_height"],
-                        self.config["blur_threshold"],
+                        self.config.get("min_reid_confidence", 0.35),
+                        self.config.get("min_reid_width", 45),
+                        self.config.get("min_reid_height", 90),
+                        self.config.get("blur_threshold", 10.0),
                         w, h, (x1, y1, x2, y2)
                     )
                     
                     if accepted:
                         state["reid_extractions"] += 1
                         embedding = self.extractor.extract([crop])[0]
-                        par_features = self.par_extractor.extract(crop)
+                        par_attr = self.par_extractor.extract_attributes(crop) if hasattr(self.par_extractor, "extract_attributes") else {}
+                        par_features = par_attr.get("features", self.par_extractor.extract(crop))
                         viewpoint, vp_conf = self.pose_extractor.extract_viewpoint(crop)
                         metadata["viewpoint_confidence"] = float(vp_conf)
+                        metadata["viewpoint"] = viewpoint
+                        metadata["camera_id"] = camera_id
+                        metadata["zone"] = cam_zone
+                        metadata["track_id"] = track_id
+                        metadata["timestamp"] = current_time
                         
                         if track_id not in state["banks"]:
                             state["banks"][track_id] = TrackEmbeddingBank(
                                 camera_id, track_id, 
-                                max_size_per_view=self.config.get("reid_bank_size", 5), # Actually max per view is e.g. 5
-                                diversity_threshold=self.config["embedding_diversity_threshold"]
+                                max_size_per_view=self.config.get("reid_bank_size", 15),
+                                diversity_threshold=self.config.get("embedding_diversity_threshold", 0.90)
                             )
                             state["match_status"][track_id] = "PENDING"
                             
-                        # Add embedding with all multi-evidence metadata
+                        # Add embedding with metadata
                         added, reason, entry = state["banks"][track_id].add_embedding(
                             embedding=embedding, 
                             quality=quality, 
                             frame_id=frame_idx,
                             viewpoint=viewpoint,
                             par_features=par_features,
-                            quality_metadata=metadata
+                            quality_metadata=metadata,
+                            par_attributes=par_attr
                         )
-                        
-                        m_status = state["match_status"].get(track_id, "PENDING")
-                        
-                        if m_status in ["PENDING", "AMBIGUOUS"]:
-                            bank_embeddings = state["banks"][track_id].get_all_embeddings()
-                            
-                            # Only attempt to match if we have collected enough evidence
-                            if len(bank_embeddings) >= self.config.get("reid_confirm_frames", 5):
-                                gid, sim, second_sim, status = self.matcher.match(
-                                    bank_embeddings, 
-                                    exclude_gids=active_global_ids
-                                )
-                                margin = sim - second_sim
-                                
-                                if status == "MATCH":
-                                    # If this is recovery, enforce threshold_recovery
-                                    is_recovery = track_id not in state["no_match_counters"] and len(bank_embeddings) > self.config.get("reid_confirm_frames", 5) + 5
-                                    rec_thresh = self.config.get("threshold_recovery", 0.70)
-                                    if not is_recovery or (is_recovery and sim >= rec_thresh):
-                                        state["global_assignments"][track_id] = gid
-                                        state["global_ids_set"].add(gid)
-                                        state["match_status"][track_id] = "MATCHED"
-                                        active_global_ids.add(gid)
-                                        
-                                        # Only update gallery if high quality
-                                        if quality >= self.config.get("gallery_update_min_quality", 0.60):
-                                            self.gallery.update_identity(gid, [{"camera_id": camera_id, "track_id": track_id}], bank_embeddings)
-                                        
-                                        print(f"\n[REID]\ncamera={camera_id}\ntrack={track_id}\nevidence={len(bank_embeddings)}\nquality={quality:.2f}\nsimilarity={sim:.2f}\nmargin={margin:.2f}\nmatched={gid}\n")
-                                        logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={gid}, sim={sim:.2f}, status=MATCH")
-                                    else:
-                                        status = "AMBIGUOUS" # Force wait if recovery threshold not met
-                                        
-                                if status == "NO_MATCH":
-                                    state["no_match_counters"][track_id] = state["no_match_counters"].get(track_id, 0) + 1
-                                    
-                                    if state["no_match_counters"][track_id] >= self.config.get("reid_new_id_confirm_frames", 10):
-                                        new_gid = self.gallery.add_identity([{"camera_id": camera_id, "track_id": track_id}], bank_embeddings)
-                                        state["global_assignments"][track_id] = new_gid
-                                        state["global_ids_set"].add(new_gid)
-                                        state["match_status"][track_id] = "MATCHED"
-                                        active_global_ids.add(new_gid)
-                                        
-                                        print(f"\n[GLOBAL ID]\ncamera={camera_id}\ntrack={track_id}\nevidence={len(bank_embeddings)}\nbest_similarity={sim:.2f}\nstatus=NEW\nglobal_id={new_gid}\n")
-                                        logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={new_gid}, sim={sim:.2f}, status=NEW")
-                                    else:
-                                        state["match_status"][track_id] = "AMBIGUOUS"
-                                        print(f"\n[DELAY NEW ID]\ncamera={camera_id}\ntrack={track_id}\nno_match_count={state['no_match_counters'][track_id]}\naction=WAIT_FOR_MORE_EVIDENCE\n")
-                                        
-                                if status == "AMBIGUOUS":
-                                    state["match_status"][track_id] = "AMBIGUOUS"
-                                    print(f"\n[REID AMBIGUOUS]\ncamera={camera_id}\ntrack={track_id}\nevidence={len(bank_embeddings)}\nbest_similarity={sim:.2f}\nsecond_best={second_sim:.2f}\nmargin={margin:.2f}\naction=WAIT\n")
-                                    logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid=PENDING, sim={sim:.2f}, status=AMBIGUOUS")
-                                
-                        elif m_status == "MATCHED":
-                            current_gid = state["global_assignments"][track_id]
-                            
-                            # Hysteresis Check: continuously evaluate to see if BoT-SORT made an ID switch error
-                            bank_embeddings = state["banks"][track_id].get_all_embeddings()
-                            
-                            hysteresis_exclude = set(active_global_ids)
-                            if current_gid in hysteresis_exclude:
-                                hysteresis_exclude.remove(current_gid)
-                                
-                            gid, sim, second_sim, status = self.matcher.match(bank_embeddings, exclude_gids=hysteresis_exclude)
-                            margin = sim - second_sim
-                            
-                            if status == "MATCH" and gid != current_gid and sim >= self.config.get("hysteresis_switch_threshold", 0.85) and margin >= 0.10:
-                                if state["hysteresis_candidate"].get(track_id) != gid:
-                                    state["hysteresis_candidate"][track_id] = gid
-                                    state["hysteresis_counters"][track_id] = 1
-                                else:
-                                    state["hysteresis_counters"][track_id] += 1
-                                    
-                                if state["hysteresis_counters"][track_id] >= self.config.get("hysteresis_consecutive_frames", 3):
-                                    # Execute Switch!
-                                    print(f"\n[HYSTERESIS SWITCH]\ncamera={camera_id}\ntrack={track_id}\nold_gid={current_gid}\nnew_gid={gid}\nsimilarity={sim:.2f}\n")
-                                    logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, old_gid={current_gid}, new_gid={gid}, sim={sim:.2f}, status=HYSTERESIS_SWITCH")
-                                    
-                                    # Remove old assignment mapping and add new
-                                    if current_gid in state["global_ids_set"]:
-                                        state["global_ids_set"].remove(current_gid)
-                                    state["global_assignments"][track_id] = gid
-                                    state["global_ids_set"].add(gid)
-                                    
-                                    if current_gid in active_global_ids:
-                                        active_global_ids.remove(current_gid)
-                                    active_global_ids.add(gid)
-                                    
-                                    # Reset counters
-                                    state["hysteresis_counters"][track_id] = 0
-                                    state["hysteresis_candidate"][track_id] = None
-                                    current_gid = gid
-                            else:
-                                state["hysteresis_counters"][track_id] = 0
-                                state["hysteresis_candidate"][track_id] = None
 
-                            if added and quality >= self.config.get("gallery_update_min_quality", 0.60):
-                                self.gallery.update_identity(current_gid, [{"camera_id": camera_id, "track_id": track_id}], [entry])
-                                print(f"\n[GLOBAL ID RETAINED]\ncamera={camera_id}\ntrack={track_id}\nglobal_id={current_gid}\nreason={reason}\n")
-                                logging.info(f"MATCH_LOG: camera={camera_id}, track={track_id}, gid={current_gid}, status=RETAINED, reason={reason}")
-                                
-            m_status = state.get("match_status", {}).get(track_id, "PENDING")
-            
-            if m_status == "MATCHED":
-                gid = state["global_assignments"].get(track_id, "UNKNOWN")
-                color = (0, 0, 255)
-                label = f"Trk: {track_id} | GID: {gid}"
-            elif m_status in ["PENDING", "AMBIGUOUS"]:
-                color = (0, 165, 255) # Orange
-                label = f"Trk: {track_id} | GID: {m_status}"
-            else:
-                color = (0, 255, 0)
-                label = f"Trk: {track_id} | GID: UNKNOWN"
-            
-            # Draw the colored bounding box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-            
-            # Draw combined Tracking and Global ID text above the bounding box
-            cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, color, 3)
-            
+                # ---------------------------------------------------------
+                # Phase 1 Association via AssociationManager
+                # ---------------------------------------------------------
+                if track_id in state["banks"] and self.association_manager is not None:
+                    bank_embeddings = state["banks"][track_id].get_all_embeddings()
+                    if bank_embeddings:
+                        # Exclude GIDs occupied by OTHER active tracks visible in this camera's current frame
+                        same_cam_occupied = {
+                            existing_gid for other_tid, existing_gid in state["global_assignments"].items()
+                            if other_tid in current_track_ids and other_tid != track_id
+                        }
+                        active_camera_gids = same_cam_occupied.union(other_active_gids)
+
+                        assigned_gid, assoc_status, sim, details = self.association_manager.associate_track(
+                            camera_id=camera_id,
+                            zone=cam_zone,
+                            local_track_id=track_id,
+                            bank_embeddings=bank_embeddings,
+                            current_time=current_time,
+                            frame_idx=frame_idx,
+                            active_camera_gids=active_camera_gids
+                        )
+                        if assoc_status == "MATCHED" and assigned_gid:
+                            # Reacquisition / cleanup: if an old lost track in this camera held this GID, clean it up
+                            for other_tid, existing_gid in list(state["global_assignments"].items()):
+                                if existing_gid == assigned_gid and other_tid != track_id:
+                                    state["global_assignments"].pop(other_tid, None)
+                                    state["match_status"].pop(other_tid, None)
+
+                            # Clean up from any OTHER cameras if they had this GID assigned
+                            for other_cid, other_st in self.state.items():
+                                if other_cid != camera_id:
+                                    for other_tid, existing_gid in list(other_st.get("global_assignments", {}).items()):
+                                        if existing_gid == assigned_gid:
+                                            other_st["global_assignments"].pop(other_tid, None)
+                                            other_st.get("match_status", {}).pop(other_tid, None)
+
+                            state["global_assignments"][track_id] = assigned_gid
+                            state["global_ids_set"].add(assigned_gid)
+                            state["match_status"][track_id] = "MATCHED"
+                            self._sync_global_id_assignment(camera_id, track_id, assigned_gid)
+                            update_min_q = float(self.config.get("gallery_update_min_quality", 0.60))
+                            if added and quality >= update_min_q:
+                                self.gallery.update_identity(
+                                    assigned_gid, 
+                                    [{"camera_id": camera_id, "track_id": track_id}], 
+                                    bank_embeddings
+                                )
+                        elif assoc_status == "PENDING":
+                            if state["match_status"].get(track_id) != "MATCHED":
+                                state["match_status"][track_id] = "PENDING"
+
+        # ---------------------------------------------------------
+        # Phase 1 Floor-Plan Annotations & Overlays
+        # ---------------------------------------------------------
+        if self.phase1_mode:
+            self._draw_phase1_annotations(camera_id, frame, h, w, tracks, state, cam_zone)
+        else:
+            # Fallback legacy annotations if requested
+            for t in tracks:
+                x1, y1, x2, y2, track_id, conf, cls = t
+                x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+                gid = state["global_assignments"].get(int(track_id), "UNKNOWN")
+                cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                cv2.putText(frame, f"Trk: {track_id} | GID: {gid}", (x1, max(25, y1 - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 255, 0), 2)
+
         # Draw raw detections in yellow (if tracker dropped them)
         for d in raw_detections:
             x1, y1, x2, y2, conf, cls = d
             x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 255), 2)
             cv2.putText(frame, f"Det Only: {conf:.2f}", (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 255, 255), 3)
-            
+
         return frame
+
+    def _draw_phase1_annotations(self, camera_id: str, frame: np.ndarray, h: int, w: int, tracks: list, state: dict, cam_zone: str):
+        # 1. Draw ROIs
+        if camera_id in self.roi_detectors:
+            for roi_id, poly in self.roi_detectors[camera_id].polygons.items():
+                cv2.polylines(frame, [poly], isClosed=True, color=(255, 200, 0), thickness=2)
+                M = cv2.moments(poly)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                else:
+                    cx, cy = int(poly[0][0][0]), int(poly[0][0][1])
+                cv2.putText(frame, f"ROI: {roi_id.upper()}", (max(10, cx - 40), max(20, cy)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 200, 0), 2)
+
+        # 2. Draw Transition Lines
+        if camera_id in self.transition_detectors:
+            for trans_id, line_info in self.transition_detectors[camera_id].lines.items():
+                p1 = (int(line_info["start"][0]), int(line_info["start"][1]))
+                p2 = (int(line_info["end"][0]), int(line_info["end"][1]))
+                line_col = (0, 255, 255) if "yellow" in trans_id else ((0, 255, 0) if "green" in trans_id else (0, 165, 255))
+                cv2.line(frame, p1, p2, line_col, 3)
+                cv2.circle(frame, p1, 5, line_col, -1)
+                cv2.circle(frame, p2, 5, line_col, -1)
+                mid_x, mid_y = int((p1[0] + p2[0]) / 2), int((p1[1] + p2[1]) / 2)
+                cv2.putText(frame, trans_id, (mid_x - 30, max(20, mid_y - 10)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.55, line_col, 2)
+
+        # 3. Draw Track Boxes & Journey Badges
+        rendered_gids = set()
+        for t in tracks:
+            x1, y1, x2, y2, track_id, conf, cls = t
+            x1, y1, x2, y2 = map(int, [x1, y1, x2, y2])
+            track_id = int(track_id)
+            foot_pt = (int((x1 + x2) / 2), int(y2))
+            cv2.circle(frame, foot_pt, 4, (0, 255, 255), -1)
+
+            gid = state["global_assignments"].get(track_id)
+            m_status = state.get("match_status", {}).get(track_id, "PENDING")
+            
+            # Guard against duplicate GID rendering on multiple bounding boxes in the same frame
+            if gid and gid in rendered_gids:
+                gid = None
+                m_status = "PENDING"
+            elif gid and m_status == "MATCHED":
+                rendered_gids.add(gid)
+
+            ident_state = self.journey_manager.get_identity(gid) if (gid and self.journey_manager) else None
+            last_trans = ident_state.last_transition_id if ident_state else None
+            curr_roi = ident_state.current_roi if ident_state else None
+
+            if m_status == "MATCHED" and gid:
+                color = (0, 255, 0)
+                top_text = f"GID: {gid} | L{track_id} | CONFIRMED"
+            elif m_status == "PENDING":
+                color = (0, 165, 255) # Orange
+                cand = self.association_manager.pending_candidate.get((camera_id, track_id)) if self.association_manager else None
+                if cand:
+                    cnt = self.association_manager.pending_counters.get((camera_id, track_id), 1)
+                    pending_thresh = int(self.config.get("pending_confirm_frames", 3))
+                    top_text = f"PENDING ({cand} {cnt}/{pending_thresh}) | L{track_id}"
+                else:
+                    top_text = f"PENDING | L{track_id}"
+            else:
+                color = (255, 255, 0) # Cyan/Yellow
+                top_text = f"NEW/UNKNOWN | L{track_id}"
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            cv2.putText(frame, top_text, (x1, max(25, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+
+            sub_text = f"Zone: {cam_zone} | ROI: {curr_roi or 'None'} | Last: {last_trans or 'None'}"
+            cv2.putText(frame, sub_text, (x1, min(h - 10, y2 + 20)), cv2.FONT_HERSHEY_SIMPLEX, 0.50, (230, 230, 230), 2)
 
     def stop(self):
         self.running = False

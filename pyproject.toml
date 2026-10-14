@@ -15,3 +15,7 @@ dependencies = [
     "torchvision>=0.29.0",
     "ultralytics>=8.4.155",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
