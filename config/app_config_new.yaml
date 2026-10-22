@@ -6,7 +6,8 @@ cameras:
   waiting_lobby:
     camera_id: "waiting_lobby"
     zone: "waiting_lobby"
-    video_path: "cctv_samples/test6/test6-w.mp4"
+    video_path: "D:/cctv_samples/test6/test6-w.mp4"
+    expected_resolution: [1280, 720]
     roi: {}
     transitions:
       lobby_exit:
@@ -21,7 +22,8 @@ cameras:
   pantry:
     camera_id: "pantry"
     zone: "pantry"
-    video_path: "cctv_samples/test6/test6-pantry.mp4"
+    video_path: "C:/Users/Agira/Downloads/240570.mp4"
+    expected_resolution: [1280, 720]
     crop: [0, 0, 720, 720]
     track_only_inside_roi: ["sink"]
     roi:
@@ -54,7 +56,8 @@ cameras:
   passage:
     camera_id: "passage"
     zone: "passage"
-    video_path: "cctv_samples/test6/test6-p.mp4"
+    video_path: "D:/cctv_samples/test6/test6-p.mp4"
+    expected_resolution: [1280, 720]
     roi: {}
     transitions:
       passage_transition:
@@ -225,6 +228,7 @@ exclusion_zones:
 # ============================================================
 
 phase1_mode: true
+raise_on_resolution_error: true
 
 handwashing:
   enabled: false

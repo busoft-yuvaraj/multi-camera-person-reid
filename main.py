@@ -1,6 +1,7 @@
 import yaml
 import logging
 import os
+import sys
 from datetime import datetime
 from dotenv import load_dotenv
 
@@ -12,6 +13,7 @@ from app.reid.global_gallery import GlobalGallery
 from app.reid.qdrant_gallery import QdrantGallery
 from app.reid.matcher import GlobalMatcher
 from app.multi_camera_processor import MultiCameraProcessor
+from app.events import FrameResolutionMismatchError
 
 # Phase 1 Floor-Plan-Aware Components
 from app.journey.journey_store import JourneyStore
@@ -187,6 +189,10 @@ def main():
     except KeyboardInterrupt:
         logging.info("Interrupt received. Stopping processing...")
         processor.stop()
+    except FrameResolutionMismatchError as e:
+        logging.critical(f"Pipeline terminated due to frame resolution mismatch: {e}")
+        processor.stop()
+        sys.exit(1)
         
     logging.info("Processing complete.")
     if hasattr(gallery, "save"):

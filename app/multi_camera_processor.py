@@ -20,7 +20,13 @@ from app.violation.violation_engine import ViolationEngine
 from app.violation.handwash_detector import HandwashDetector
 
 from app.events.transition_detector import TransitionDetector, TransitionEvent
-from app.events.roi_detector import RoiDetector, RoiEvent
+from app.events.roi_detector import (
+    RoiDetector,
+    RoiEvent,
+    FrameResolutionMismatchError,
+    DEFAULT_CAMERA_RESOLUTIONS,
+    parse_resolution,
+)
 from app.association.association_manager import AssociationManager
 from app.journey.journey_manager import JourneyManager
 from app.journey.journey_store import JourneyStore
@@ -34,8 +40,8 @@ class MultiCameraProcessor:
         extractor,
         par_extractor,
         pose_extractor,
-        gallery,
-        matcher,
+        gallery=None,
+        matcher=None,
         attire_extractor=None,
         violation_engine=None,
         line_detectors=None,
@@ -143,10 +149,12 @@ class MultiCameraProcessor:
         self.journey_manager = journey_manager
         self.store = store
         self.phase1_mode = bool(config.get("phase1_mode", True) or (association_manager is not None))
+        self.raise_on_resolution_error = bool(config.get("raise_on_resolution_error", True))
 
         # State & Detectors per camera
         self.transition_detectors = {}
         self.roi_detectors = {}
+        self.expected_resolutions = {}
         self.state = {}
         cam_cfgs = self.config.get("cameras", {})
         for cam in cameras_info:
@@ -207,6 +215,11 @@ class MultiCameraProcessor:
                             pts["start"] = [int(round((pts["start"][0] - cx1) * sx)), int(round((pts["start"][1] - cy1) * sy))]
                             pts["end"] = [int(round((pts["end"][0] - cx1) * sx)), int(round((pts["end"][1] - cy1) * sy))]
 
+            c_expected_res = parse_resolution(
+                c_cfg.get("expected_resolution") or c_cfg.get("resolution") or roi_cfg.get("expected_resolution")
+            ) or DEFAULT_CAMERA_RESOLUTIONS.get(c_id, (1280, 720))
+            self.expected_resolutions[c_id] = c_expected_res
+
             self.transition_detectors[c_id] = TransitionDetector(
                 camera_id=c_id,
                 zone=c_zone,
@@ -217,7 +230,8 @@ class MultiCameraProcessor:
                 camera_id=c_id,
                 zone=c_zone,
                 roi_config=roi_cfg,
-                debounce_frames=int(config.get("roi_debounce_frames", 3))
+                debounce_frames=int(config.get("roi_debounce_frames", 3)),
+                expected_resolution=c_expected_res
             )
 
             self.state[c_id] = {
@@ -230,6 +244,9 @@ class MultiCameraProcessor:
                 "frame_count": 0,
                 "current_presentation_time": 0.0,
                 "current_shared_time": float(start_offset),
+                "expected_resolution": c_expected_res,
+                "expected_original_resolution": c_expected_res,
+                "resolution_error": None,
                 "model": YOLO(config["model_path"]), # Independent YOLO state per camera!
                 "banks": {},
                 "global_assignments": {},
@@ -249,6 +266,47 @@ class MultiCameraProcessor:
             }
             
         self.running = True
+
+    def validate_camera_frame(self, camera_id: str, frame: Any, stage: str = "evaluation") -> bool:
+        """
+        Validates frame dimensions against the expected resolution for the given camera.
+        Raises FrameResolutionMismatchError if the frame is invalid or dimensions do not match.
+        """
+        expected_res = self.expected_resolutions.get(camera_id) or DEFAULT_CAMERA_RESOLUTIONS.get(camera_id, (1280, 720))
+        if frame is None:
+            raise FrameResolutionMismatchError(
+                camera_id=camera_id,
+                expected_resolution=expected_res,
+                actual_resolution=(0, 0),
+                message=f"[{camera_id}] Received None frame at {stage} stage: frame is unreadable or empty."
+            )
+        if not hasattr(frame, "shape") or len(frame.shape) < 2:
+            raise FrameResolutionMismatchError(
+                camera_id=camera_id,
+                expected_resolution=expected_res,
+                actual_resolution=(0, 0),
+                message=f"[{camera_id}] Received invalid frame with shape {getattr(frame, 'shape', None)} at {stage} stage."
+            )
+        act_h, act_w = int(frame.shape[0]), int(frame.shape[1])
+        if act_h <= 0 or act_w <= 0:
+            raise FrameResolutionMismatchError(
+                camera_id=camera_id,
+                expected_resolution=expected_res,
+                actual_resolution=(act_w, act_h),
+                message=f"[{camera_id}] Received empty frame with zero dimensions ({act_w}x{act_h}) at {stage} stage."
+            )
+        if (act_w, act_h) != expected_res:
+            raise FrameResolutionMismatchError(
+                camera_id=camera_id,
+                expected_resolution=expected_res,
+                actual_resolution=(act_w, act_h),
+                message=(
+                    f"Frame resolution mismatch for camera '{camera_id}' at {stage} stage: "
+                    f"expected {expected_res[0]}x{expected_res[1]} (WxH), but got {act_w}x{act_h} (WxH). "
+                    f"ROI coordinates cannot be safely applied."
+                )
+            )
+        return True
 
     def _sync_global_id_assignment(self, camera_id: str, track_id: int, gid: str):
         """
@@ -298,98 +356,131 @@ class MultiCameraProcessor:
         frame_idx = 0
         if max_frames is None:
             max_frames = self.config.get("max_frames")
-        while self.running:
-            if max_frames and frame_idx >= max_frames:
-                logging.info(f"Reached max_frames limit: {max_frames}. Ending processing.")
-                break
-            all_finished = True
-            display_frames = []
-            
-            for cam in self.cameras_info:
-                cam_id = cam["camera_id"]
-                state = self.state[cam_id]
-                
-                if not state["finished"]:
-                    ret, frame = state["cap"].read()
-                    if not ret:
-                        state["finished"] = True
-                    else:
-                        all_finished = False
-                        
-                        # Apply camera crop & zoom if configured
-                        if state.get("crop"):
-                            cx1, cy1, cx2, cy2 = state["crop"]
-                            frame = frame[cy1:cy2, cx1:cx2]
-                            frame = cv2.resize(frame, (w, h))
-
-                        # Process frame
-                        frame = self._process_frame(cam_id, frame, frame_idx, w, h)
-                        state["last_frame"] = frame.copy()
-                        
-                        # Add camera name and zone overlay
-                        c_zone_name = state.get("zone", cam_id).upper()
-                        cv2.putText(state["last_frame"], f"Camera: {cam_id} | Zone: {c_zone_name}", (20, 40), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
-                
-                # If finished, we just use the last frame (frozen)
-                if state["last_frame"] is not None:
-                    display_frames.append(state["last_frame"])
-                else:
-                    # Never read a single frame (camera failed or offline)
-                    placeholder = np.zeros((h, w, 3), dtype=np.uint8)
-                    cv2.putText(placeholder, f"CAMERA OFFLINE: {cam_id}", (50, h // 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
-                    cv2.putText(placeholder, f"Path: {state.get('video_path', '')}", (50, (h // 2) + 40),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
-                    display_frames.append(placeholder)
-            
-            if all_finished:
-                break
-                
-            frame_idx += 1
-            
-            if frame_idx % 30 == 0:
-                print(f"\n[FRAME {frame_idx}]")
-                for cam in self.cameras_info:
-                    c_id = cam["camera_id"]
-                    st = self.state[c_id]
-                    gids_str = ", ".join(sorted(list(st["global_ids_set"]))) if st["global_ids_set"] else "None"
-                    print(f"{c_id.upper()}:")
-                    print(f"  detections = {st['detections']}")
-                    print(f"  active_tracks = {st['active_tracks']}")
-                    print(f"  reid_extractions = {st['reid_extractions']}")
-                    print(f"  global_ids = [{gids_str}]\n")
-                    # Reset counters for the next 30 frames
-                    st["detections"] = 0
-                    st["active_tracks"] = 0
-                    st["reid_extractions"] = 0
-            
-            # Ensure all frames are exactly the same height for hstack display
-            for i in range(len(display_frames)):
-                if display_frames[i].shape[:2] != (h, w):
-                    display_frames[i] = cv2.resize(display_frames[i], (w, h))
-                    
-            combined_frame = np.hstack(display_frames)
-            out.write(combined_frame)
-            
-            try:
-                cv2.imshow("Multi-Camera Tracker", combined_frame)
-                if cv2.waitKey(1) & 0xFF == ord('q'):
-                    self.running = False
+        try:
+            while self.running:
+                if max_frames and frame_idx >= max_frames:
+                    logging.info(f"Reached max_frames limit: {max_frames}. Ending processing.")
                     break
-            except Exception:
-                pass
+                all_finished = True
+                display_frames = []
                 
-        # Cleanup
-        for state in self.state.values():
-            if state["cap"].isOpened():
-                state["cap"].release()
-        out.release()
-        cv2.destroyAllWindows()
-        logging.info("Finished processing all cameras.")
+                for cam in self.cameras_info:
+                    cam_id = cam["camera_id"]
+                    state = self.state[cam_id]
+                    
+                    if not state["finished"]:
+                        ret, frame = state["cap"].read()
+                        if not ret:
+                            state["finished"] = True
+                        else:
+                            all_finished = False
+                            
+                            try:
+                                # 1. Safely handle unreadable or invalid frames
+                                if frame is None or getattr(frame, "size", 0) == 0:
+                                    raise FrameResolutionMismatchError(
+                                        camera_id=cam_id,
+                                        expected_resolution=state.get("expected_resolution", (1280, 720)),
+                                        actual_resolution=(0, 0),
+                                        message=f"[{cam_id}] Unreadable or empty frame encountered."
+                                    )
+
+                                # 2. Stage: Validate raw/original frame before cropping or resizing
+                                # Strictly prevents automatic resizing from masking a resolution mismatch.
+                                self.validate_camera_frame(cam_id, frame, stage="original")
+
+                                # 3. Apply camera crop & zoom if configured
+                                if state.get("crop"):
+                                    cx1, cy1, cx2, cy2 = state["crop"]
+                                    frame = frame[cy1:cy2, cx1:cx2]
+                                    frame = cv2.resize(frame, (w, h))
+
+                                # 4. Stage: Validate post-resize/evaluation frame before ROI processing
+                                self.validate_camera_frame(cam_id, frame, stage="evaluation")
+
+                                # Process frame
+                                frame = self._process_frame(cam_id, frame, frame_idx, w, h)
+                                state["last_frame"] = frame.copy()
+                                
+                                # Add camera name and zone overlay
+                                c_zone_name = state.get("zone", cam_id).upper()
+                                cv2.putText(state["last_frame"], f"Camera: {cam_id} | Zone: {c_zone_name}", (20, 40), 
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.85, (0, 255, 255), 2)
+
+                            except FrameResolutionMismatchError as e:
+                                logging.error(f"[{cam_id}] Frame resolution validation failed: {e}. Stopping entire tracking program.")
+                                self.running = False
+                                for s in self.state.values():
+                                    s["finished"] = True
+                                state["resolution_error"] = str(e)
+                                if self.raise_on_resolution_error:
+                                    raise
+                                break
+                    
+                    # If finished, we just use the last frame (frozen)
+                    if state["last_frame"] is not None:
+                        display_frames.append(state["last_frame"])
+                    else:
+                        # Never read a single frame (camera failed or offline)
+                        placeholder = np.zeros((h, w, 3), dtype=np.uint8)
+                        cv2.putText(placeholder, f"CAMERA OFFLINE: {cam_id}", (50, h // 2),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
+                        cv2.putText(placeholder, f"Path: {state.get('video_path', '')}", (50, (h // 2) + 40),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (160, 160, 160), 1)
+                        display_frames.append(placeholder)
+                
+                if all_finished or not self.running:
+                    break
+                    
+                frame_idx += 1
+                
+                if frame_idx % 30 == 0:
+                    print(f"\n[FRAME {frame_idx}]")
+                    for cam in self.cameras_info:
+                        c_id = cam["camera_id"]
+                        st = self.state[c_id]
+                        gids_str = ", ".join(sorted(list(st["global_ids_set"]))) if st["global_ids_set"] else "None"
+                        print(f"{c_id.upper()}:")
+                        print(f"  detections = {st['detections']}")
+                        print(f"  active_tracks = {st['active_tracks']}")
+                        print(f"  reid_extractions = {st['reid_extractions']}")
+                        print(f"  global_ids = [{gids_str}]\n")
+                        # Reset counters for the next 30 frames
+                        st["detections"] = 0
+                        st["active_tracks"] = 0
+                        st["reid_extractions"] = 0
+                
+                # Ensure all frames are exactly the same height for hstack display
+                for i in range(len(display_frames)):
+                    if display_frames[i].shape[:2] != (h, w):
+                        display_frames[i] = cv2.resize(display_frames[i], (w, h))
+                        
+                combined_frame = np.hstack(display_frames)
+                out.write(combined_frame)
+                
+                try:
+                    cv2.imshow("Multi-Camera Tracker", combined_frame)
+                    if cv2.waitKey(1) & 0xFF == ord('q'):
+                        self.running = False
+                        break
+                except Exception:
+                    pass
+        finally:
+            # Cleanup
+            for state in self.state.values():
+                if state.get("cap") and state["cap"].isOpened():
+                    state["cap"].release()
+            if out is not None and out.isOpened():
+                out.release()
+            cv2.destroyAllWindows()
+            logging.info("Finished processing all cameras.")
 
     def _process_frame(self, camera_id, frame, frame_idx, w, h):
         state = self.state[camera_id]
+
+        # Strictly validate frame resolution before evaluating detections or applying ROIs
+        if camera_id in self.roi_detectors:
+            self.roi_detectors[camera_id].validate_frame(frame)
         
         results = state["model"].track(
             frame, 
@@ -450,6 +541,7 @@ class MultiCameraProcessor:
         allowed_rois = self.config.get("cameras", {}).get(camera_id, {}).get("track_only_inside_roi", [])
         if allowed_rois and camera_id in self.roi_detectors:
             roi_det = self.roi_detectors[camera_id]
+            roi_det.validate_frame(frame)
             valid_tracks = []
             for t in tracks:
                 fx, fy = (t[0] + t[2]) / 2.0, t[3]
@@ -556,7 +648,8 @@ class MultiCameraProcessor:
                     bbox=(x1, y1, x2, y2),
                     frame_idx=frame_idx,
                     timestamp=current_time,
-                    global_id=state["global_assignments"].get(track_id)
+                    global_id=state["global_assignments"].get(track_id),
+                    frame=frame
                 )
                 for revt in roi_events:
                     if self.journey_manager:
