@@ -19,7 +19,8 @@ class SpatialGate:
         time_since_transition: float,
         target_camera: Optional[str] = None,
         source_last_seen: Optional[float] = None,
-        trans_timestamp: Optional[float] = None
+        trans_timestamp: Optional[float] = None,
+        candidate_zones: Optional[List[str]] = None
     ) -> Tuple[bool, float, str]:
         """
         Evaluates spatial evidence for candidate.
@@ -39,20 +40,22 @@ class SpatialGate:
         # If person continued being observed in source_camera substantially after crossing the line,
         # the crossing was internal room movement, not an exit handoff.
         if trans_timestamp is not None and source_last_seen is not None:
-            if (source_last_seen - trans_timestamp) > 2.0:
+            if (source_last_seen - trans_timestamp) > 3.5:
                 return True, 0.65, f"TRANSITION_INTERNAL ({last_transition_id} followed by active presence in {source_camera})"
 
-        # Stale transition check (> 45s)
-        if time_since_transition > 45.0:
-            return True, 0.60, f"TRANSITION_STALE ({last_transition_id} elapsed {time_since_transition:.1f}s > 45s)"
+        # Stale transition check (> 15s)
+        if time_since_transition > 15.0:
+            return True, 0.60, f"TRANSITION_STALE ({last_transition_id} elapsed {time_since_transition:.1f}s > 15s)"
 
         # Check configured transition rules and target camera
         matched_rule = False
         reverse_direction = False
-        expected_zones = []
+        expected_zones = list(candidate_zones or [])
 
-        # If explicit target_camera metadata exists on candidate and matches
-        if target_camera and target_camera == current_camera:
+        # If explicit target_camera metadata or candidate_zones exists on candidate and matches
+        if target_camera and target_camera == current_camera and target_camera != source_camera:
+            matched_rule = True
+        if candidate_zones and current_camera in candidate_zones and current_camera != source_camera:
             matched_rule = True
 
         for rule in self.rules:

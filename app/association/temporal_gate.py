@@ -17,6 +17,8 @@ class TemporalGate:
         self.default_min_seconds = default_min_seconds
         self.default_max_seconds = default_max_seconds
         self.same_camera_max_seconds = float(self.config.get("same_camera_reacquisition_max_seconds", same_camera_max_seconds))
+        raw_pairs = self.config.get("overlapping_camera_pairs", [])
+        self.overlapping_pairs = [set(p) for p in raw_pairs]
 
     def evaluate(
         self,
@@ -56,6 +58,9 @@ class TemporalGate:
             # near-zero elapsed time (e.g. boundary handoff in synchronized feeds) is legitimate handoff.
             if has_validated_transition:
                 return True, 0.90, f"TRANSITION_HANDOFF (Validated transition from {source_camera} to {target_camera}, {elapsed_seconds:.2f}s)"
+            pair = {source_camera, target_camera}
+            if pair in self.overlapping_pairs:
+                return True, 0.85, f"OVERLAPPING_VIEW (Simultaneous visibility across {source_camera} and {target_camera}, {elapsed_seconds:.2f}s)"
             return False, 0.0, f"TOO_FAST ({elapsed_seconds:.1f}s < {min_s}s)"
 
         if elapsed_seconds > max_s:

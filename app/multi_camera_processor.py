@@ -24,6 +24,7 @@ from app.events.roi_detector import RoiDetector, RoiEvent
 from app.association.association_manager import AssociationManager
 from app.journey.journey_manager import JourneyManager
 from app.journey.journey_store import JourneyStore
+from app.utils.path_resolver import resolve_video_path, resolve_output_path
 
 class MultiCameraProcessor:
     def __init__(
@@ -44,7 +45,8 @@ class MultiCameraProcessor:
         handwash_detector=None,
         association_manager=None,
         journey_manager=None,
-        store=None
+        store=None,
+        person_masker=None
     ):
         """
         cameras_info: list of dicts [{"camera_id": "cctv1", "video_path": "..."}, ...]
@@ -52,6 +54,7 @@ class MultiCameraProcessor:
         self.cameras_info = cameras_info
         
         # Append date and time to the output path to prevent overriding
+        output_path = resolve_output_path(output_path)
         base_name, ext = os.path.splitext(output_path)
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         self.output_path = f"{base_name}_{timestamp}{ext}"
@@ -68,6 +71,25 @@ class MultiCameraProcessor:
         self.attire_extractor = attire_extractor
         self.gallery = gallery
         self.matcher = matcher
+        
+        # Initialize ReID Person Masker (Background Suppression)
+        self.person_masker = person_masker
+        if self.person_masker is None:
+            masking_cfg = config.get("reid_masking", {})
+            if masking_cfg.get("enabled", False):
+                try:
+                    from app.reid.masker import PersonMasker
+                    self.person_masker = PersonMasker(
+                        model_path=masking_cfg.get("model_path", "models/yolo11n-seg.pt"),
+                        enabled=bool(masking_cfg.get("enabled", True)),
+                        imgsz=int(masking_cfg.get("imgsz", 160)),
+                        bg_fill=tuple(masking_cfg.get("bg_fill", [128, 128, 128])),
+                        mask_reuse_frames=int(masking_cfg.get("mask_reuse_frames", 6)),
+                        device="cpu"
+                    )
+                except Exception as e:
+                    logging.warning(f"Could not load PersonMasker: {e}")
+                    self.person_masker = None
         
         # Initialize Violation Detection Layer
         self.violation_config = config.get("violation_detection", {})
@@ -105,7 +127,7 @@ class MultiCameraProcessor:
             
             ev_cfg = self.violation_config.get("evidence", {})
             self.evidence_manager = EvidenceManager(
-                output_dir=ev_cfg.get("output_dir", "output/violations"),
+                output_dir=resolve_output_path(ev_cfg.get("output_dir", "D:/output/violations")),
                 enabled=bool(ev_cfg.get("enabled", True)),
                 save_image=bool(ev_cfg.get("save_image", True)),
                 save_metadata=bool(ev_cfg.get("save_metadata", True))
@@ -153,7 +175,7 @@ class MultiCameraProcessor:
             c_id = cam["camera_id"]
             c_cfg = cam_cfgs.get(c_id, {})
             c_zone = c_cfg.get("zone", c_id)
-            v_path = cam.get("video_path", "")
+            v_path = resolve_video_path(cam.get("video_path", ""))
             if not os.path.exists(v_path):
                 candidates = [
                     v_path.replace("test_2", "test2"),
@@ -244,8 +266,12 @@ class MultiCameraProcessor:
                 "global_ids_set": set(),
                 "last_seen_frame": {},
                 "last_seen_time": {},
+                "track_lifecycle": {},
+                "historical_global_assignments": {},
                 "local_id_map": {},
-                "next_local_id": 1
+                "next_local_id": 1,
+                "probation_counts": {},
+                "probation_embeddings": {}
             }
             
         self.running = True
@@ -446,26 +472,8 @@ class MultiCameraProcessor:
                     valid_raw.append(d)
             raw_detections = valid_raw
 
-        # Apply track_only_inside_roi if configured for this camera
-        allowed_rois = self.config.get("cameras", {}).get(camera_id, {}).get("track_only_inside_roi", [])
-        if allowed_rois and camera_id in self.roi_detectors:
-            roi_det = self.roi_detectors[camera_id]
-            valid_tracks = []
-            for t in tracks:
-                fx, fy = (t[0] + t[2]) / 2.0, t[3]
-                in_roi = any(roi_det.is_point_in_roi((fx, fy), r_id) for r_id in allowed_rois)
-                if in_roi:
-                    valid_tracks.append(t)
-            tracks = valid_tracks
-
-            valid_raw = []
-            for d in raw_detections:
-                fx, fy = (d[0] + d[2]) / 2.0, d[3]
-                in_roi = any(roi_det.is_point_in_roi((fx, fy), r_id) for r_id in allowed_rois)
-                if in_roi:
-                    valid_raw.append(d)
-            raw_detections = valid_raw
-            
+        # Note: Persons outside activity ROIs (e.g. sink) remain tracked across the entire camera view.
+        # Monitored ROIs and activity ROIs emit entry/exit events via RoiDetector without killing underlying tracks.
         state["detections"] += len(tracks) + len(raw_detections)
         state["active_tracks"] += len(tracks)
 
@@ -483,27 +491,41 @@ class MultiCameraProcessor:
         for tid in current_track_ids:
             state["last_seen_frame"][tid] = frame_idx
             state["last_seen_time"][tid] = current_time
+            state["track_lifecycle"][tid] = "OBSERVED"
 
-        # Exclude GIDs actively visible in OTHER cameras right now on shared timeline
         cam_zone = state.get("zone", camera_id)
-        other_active_gids = set()
-        for other_cid, other_st in self.state.items():
-            if other_cid != camera_id:
-                for o_tid, o_last_time in other_st.get("last_seen_time", {}).items():
-                    # Active within the last 0.50s of the shared timeline
-                    if abs(current_time - o_last_time) <= 0.50:
-                        o_gid = other_st.get("global_assignments", {}).get(o_tid)
-                        if o_gid:
-                            other_active_gids.add(o_gid)
+
+        # Update lifecycle for tracks not observed in this frame
+        track_lost_frames = int(self.config.get("track_lost_frames", 60))
+        for tid, l_frame in list(state["last_seen_frame"].items()):
+            if tid not in current_track_ids:
+                if frame_idx - l_frame > track_lost_frames:
+                    state["track_lifecycle"][tid] = "DORMANT"
+                else:
+                    state["track_lifecycle"][tid] = "OCCLUDED"
 
         # Handle tracks that disappeared (> track_lost_frames, default 60 frames)
-        track_lost_frames = int(self.config.get("track_lost_frames", 60))
         for tid, l_frame in list(state["last_seen_frame"].items()):
             if tid not in current_track_ids and (frame_idx - l_frame > track_lost_frames):
                 if camera_id in self.roi_detectors:
-                    self.roi_detectors[camera_id].on_track_lost(tid, frame_idx, current_time)
+                    lost_roi_evts = self.roi_detectors[camera_id].on_track_lost(tid, frame_idx, current_time)
+                    if self.journey_manager:
+                        for revt in lost_roi_evts:
+                            self.journey_manager.record_roi_event(revt)
                 if self.journey_manager:
                     self.journey_manager.on_track_lost(camera_id, cam_zone, tid, current_time, frame_idx)
+                if camera_id in self.transition_detectors:
+                    self.transition_detectors[camera_id].reset_track(tid)
+                if hasattr(self.association_manager, "reset_track"):
+                    self.association_manager.reset_track(camera_id, tid)
+                if self.person_masker:
+                    self.person_masker.reset_track(camera_id, tid)
+                state["banks"].pop(tid, None)
+                state["match_status"].pop(tid, None)
+                state.get("probation_counts", {}).pop(tid, None)
+                state.get("probation_embeddings", {}).pop(tid, None)
+                state["attire_assignments"].pop(tid, None)
+                state["attire_history"].pop(tid, None)
                 state["global_assignments"].pop(tid, None)
                 state["last_seen_frame"].pop(tid, None)
                 state["last_seen_time"].pop(tid, None)
@@ -593,7 +615,21 @@ class MultiCameraProcessor:
                     
                     if accepted:
                         state["reid_extractions"] += 1
-                        embedding = self.extractor.extract([crop])[0]
+                        
+                        # Apply lightweight person outline/segmentation masking for ReID background suppression
+                        if self.person_masker and self.person_masker.is_enabled():
+                            reid_crop, was_masked = self.person_masker.get_masked_crop(
+                                crop=crop,
+                                camera_id=camera_id,
+                                track_id=track_id,
+                                frame_idx=frame_idx
+                            )
+                            metadata["reid_masked"] = was_masked
+                        else:
+                            reid_crop = crop
+                            metadata["reid_masked"] = False
+
+                        embedding = self.extractor.extract([reid_crop])[0]
                         par_attr = self.par_extractor.extract_attributes(crop) if hasattr(self.par_extractor, "extract_attributes") else {}
                         par_features = par_attr.get("features", self.par_extractor.extract(crop))
                         viewpoint, vp_conf = self.pose_extractor.extract_viewpoint(crop)
@@ -629,51 +665,131 @@ class MultiCameraProcessor:
                 if track_id in state["banks"] and self.association_manager is not None:
                     bank_embeddings = state["banks"][track_id].get_all_embeddings()
                     if bank_embeddings:
-                        # Exclude GIDs occupied by OTHER active tracks visible in this camera's current frame
-                        same_cam_occupied = {
-                            existing_gid for other_tid, existing_gid in state["global_assignments"].items()
-                            if other_tid in current_track_ids and other_tid != track_id
-                        }
-                        active_camera_gids = same_cam_occupied.union(other_active_gids)
+                        update_min_q = float(self.config.get("gallery_update_min_quality", 0.60))
 
-                        assigned_gid, assoc_status, sim, details = self.association_manager.associate_track(
-                            camera_id=camera_id,
-                            zone=cam_zone,
-                            local_track_id=track_id,
-                            bank_embeddings=bank_embeddings,
-                            current_time=current_time,
-                            frame_idx=frame_idx,
-                            active_camera_gids=active_camera_gids
-                        )
-                        if assoc_status == "MATCHED" and assigned_gid:
-                            # Reacquisition / cleanup: if an old lost track in this camera held this GID, clean it up
-                            for other_tid, existing_gid in list(state["global_assignments"].items()):
-                                if existing_gid == assigned_gid and other_tid != track_id:
-                                    state["global_assignments"].pop(other_tid, None)
-                                    state["match_status"].pop(other_tid, None)
+                        # If already matched, maintain presence and update gallery with probation enforcement
+                        if state["match_status"].get(track_id) == "MATCHED" and track_id in state["global_assignments"]:
+                            assigned_gid = state["global_assignments"][track_id]
+                            if self.journey_manager:
+                                self.journey_manager.update_track_presence(camera_id, track_id, current_time, frame_idx)
 
-                            # Clean up from any OTHER cameras if they had this GID assigned
-                            for other_cid, other_st in self.state.items():
-                                if other_cid != camera_id:
-                                    for other_tid, existing_gid in list(other_st.get("global_assignments", {}).items()):
-                                        if existing_gid == assigned_gid:
-                                            other_st["global_assignments"].pop(other_tid, None)
-                                            other_st.get("match_status", {}).pop(other_tid, None)
+                            p_counts = state.setdefault("probation_counts", {})
+                            p_embeds = state.setdefault("probation_embeddings", {})
+                            probation_thresh = int(self.config.get("probation_confirm_frames", 4))
 
-                            state["global_assignments"][track_id] = assigned_gid
-                            state["global_ids_set"].add(assigned_gid)
-                            state["match_status"][track_id] = "MATCHED"
-                            self._sync_global_id_assignment(camera_id, track_id, assigned_gid)
-                            update_min_q = float(self.config.get("gallery_update_min_quality", 0.60))
-                            if added and quality >= update_min_q:
-                                self.gallery.update_identity(
-                                    assigned_gid, 
-                                    [{"camera_id": camera_id, "track_id": track_id}], 
-                                    bank_embeddings
-                                )
-                        elif assoc_status == "PENDING":
-                            if state["match_status"].get(track_id) != "MATCHED":
-                                state["match_status"][track_id] = "PENDING"
+                            if p_counts.get(track_id, 0) < probation_thresh:
+                                p_counts[track_id] = p_counts.get(track_id, 0) + 1
+                                if added and quality >= update_min_q:
+                                    p_embeds.setdefault(track_id, []).extend(bank_embeddings)
+                                if p_counts[track_id] >= probation_thresh:
+                                    buffered_embs = p_embeds.pop(track_id, [])
+                                    if buffered_embs and self.gallery:
+                                        self.gallery.update_identity(
+                                            assigned_gid,
+                                            [{"camera_id": camera_id, "track_id": track_id}],
+                                            buffered_embs
+                                        )
+                            else:
+                                if added and quality >= update_min_q and self.gallery:
+                                    self.gallery.update_identity(
+                                        assigned_gid,
+                                        [{"camera_id": camera_id, "track_id": track_id}],
+                                        bank_embeddings
+                                    )
+                        else:
+                            # Only treat a Global ID as occupied in the same camera when another active track
+                            # is physically observed in the CURRENT frame with confirmed MATCHED status.
+                            # A lost or occluded track must NOT prevent a newly detected track from recovering that Global ID.
+                            same_cam_occupied = set()
+                            for other_tid, existing_gid in state["global_assignments"].items():
+                                if other_tid == track_id:
+                                    continue
+                                is_observed = (other_tid in current_track_ids)
+                                is_matched = (state["match_status"].get(other_tid) == "MATCHED")
+                                if is_matched and is_observed:
+                                    same_cam_occupied.add(existing_gid)
+                            active_camera_gids = set(same_cam_occupied)
+
+                            assigned_gid, assoc_status, sim, details = self.association_manager.associate_track(
+                                camera_id=camera_id,
+                                zone=cam_zone,
+                                local_track_id=track_id,
+                                bank_embeddings=bank_embeddings,
+                                current_time=current_time,
+                                frame_idx=frame_idx,
+                                active_camera_gids=active_camera_gids
+                            )
+                            if assoc_status == "MATCHED" and assigned_gid:
+                                # Reassignment rollback: if this track previously held a different GID, roll it back
+                                old_gid = state["global_assignments"].get(track_id)
+                                if old_gid and old_gid != assigned_gid and self.gallery and hasattr(self.gallery, "rollback_track"):
+                                    self.gallery.rollback_track(old_gid, camera_id, track_id)
+
+                                # Reacquisition / cleanup: if an old lost track in this camera held this GID, clean it up
+                                for other_tid, existing_gid in list(state["global_assignments"].items()):
+                                    if existing_gid == assigned_gid and other_tid != track_id:
+                                        state["global_assignments"].pop(other_tid, None)
+                                        state["match_status"].pop(other_tid, None)
+                                        state.get("probation_counts", {}).pop(other_tid, None)
+                                        state.get("probation_embeddings", {}).pop(other_tid, None)
+
+                                # Cross-camera cleanup for non-overlapping cameras:
+                                # If this GID transitioned to camera_id, clean up old track mapping in non-overlapping cameras
+                                for other_cam_id, other_cam_state in self.state.items():
+                                    if other_cam_id != camera_id:
+                                        is_overlap = (
+                                            self.journey_manager and 
+                                            self.journey_manager.is_overlapping_pair(camera_id, other_cam_id)
+                                        )
+                                        if not is_overlap:
+                                            for o_tid, o_gid in list(other_cam_state.get("global_assignments", {}).items()):
+                                                if o_gid == assigned_gid:
+                                                    other_cam_state["global_assignments"].pop(o_tid, None)
+                                                    other_cam_state["match_status"].pop(o_tid, None)
+                                                    other_cam_state.get("probation_counts", {}).pop(o_tid, None)
+                                                    other_cam_state.get("probation_embeddings", {}).pop(o_tid, None)
+
+                                state["historical_global_assignments"][track_id] = assigned_gid
+                                state["global_assignments"][track_id] = assigned_gid
+                                state["global_ids_set"].add(assigned_gid)
+                                state["match_status"][track_id] = "MATCHED"
+                                self._sync_global_id_assignment(camera_id, track_id, assigned_gid)
+
+                                # Gallery update with provisional/probation verification:
+                                # Buffer embeddings for a newly proposed association.
+                                # Commit to the permanent gallery only after the association has sustained confirmation
+                                # across multiple observations without conflict (>= 4 evaluations), preventing gallery poisoning.
+                                p_counts = state.setdefault("probation_counts", {})
+                                p_embeds = state.setdefault("probation_embeddings", {})
+                                probation_thresh = int(self.config.get("probation_confirm_frames", 4))
+
+                                if details.get("decision") == "NEW_GLOBAL_ID_CREATED":
+                                    p_counts[track_id] = probation_thresh
+                                else:
+                                    p_counts[track_id] = p_counts.get(track_id, 0) + 1
+
+                                if added and quality >= update_min_q:
+                                    p_embeds.setdefault(track_id, []).extend(bank_embeddings)
+
+                                if p_counts[track_id] >= probation_thresh:
+                                    buffered_embs = p_embeds.pop(track_id, [])
+                                    if buffered_embs and self.gallery:
+                                        self.gallery.update_identity(
+                                            assigned_gid, 
+                                            [{"camera_id": camera_id, "track_id": track_id}], 
+                                            buffered_embs
+                                        )
+                                    elif added and quality >= update_min_q and self.gallery:
+                                        self.gallery.update_identity(
+                                            assigned_gid, 
+                                            [{"camera_id": camera_id, "track_id": track_id}], 
+                                            bank_embeddings
+                                        )
+                            elif assoc_status == "PENDING":
+                                if state["match_status"].get(track_id) != "MATCHED":
+                                    state["match_status"][track_id] = "PENDING"
+                                state.get("probation_counts", {}).pop(track_id, None)
+                                state.get("probation_embeddings", {}).pop(track_id, None)
 
         # ---------------------------------------------------------
         # Phase 1 Floor-Plan Annotations & Overlays
@@ -765,7 +881,26 @@ class MultiCameraProcessor:
                 color = (255, 255, 0) # Cyan/Yellow
                 top_text = f"NEW/UNKNOWN | L{track_id}"
 
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+            # Draw person silhouette outline contour if available, otherwise bounding box
+            drawn_outline = False
+            draw_outline_enabled = bool(self.config.get("reid_masking", {}).get("draw_outline", True))
+            if draw_outline_enabled and self.person_masker and self.person_masker.is_enabled():
+                crop_t = frame[max(0, y1):min(h, y2), max(0, x1):min(w, x2)]
+                contours = self.person_masker.get_contours(
+                    crop=crop_t,
+                    camera_id=camera_id,
+                    track_id=track_id,
+                    x1=x1,
+                    y1=y1,
+                    frame_idx=state.get("frame_count", 0)
+                )
+                if contours:
+                    cv2.polylines(frame, contours, isClosed=True, color=color, thickness=2)
+                    drawn_outline = True
+
+            if not drawn_outline:
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
             cv2.putText(frame, top_text, (x1, max(25, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
 
             sub_text = f"Zone: {cam_zone} | ROI: {curr_roi or 'None'} | Last: {last_trans or 'None'}"

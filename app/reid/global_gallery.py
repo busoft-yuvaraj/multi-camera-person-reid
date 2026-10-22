@@ -215,6 +215,35 @@ class GlobalGallery:
                 
             self.save()
             return True
+
+    def rollback_track(self, gid: str, camera_id: str, track_id: int) -> int:
+        """
+        Rolls back provisional or mistakenly committed embeddings for a track on a GID.
+        """
+        with self.lock:
+            ident = self.identities.get(gid)
+            if not ident:
+                return 0
+            if hasattr(ident, "remove_track_embeddings"):
+                removed = ident.remove_track_embeddings(camera_id, track_id)
+                self.save()
+                return removed
+            elif isinstance(ident, dict):
+                old_embs = ident.get("embeddings", [])
+                new_embs = [
+                    e for e in old_embs
+                    if not (isinstance(e, dict) and e.get("camera_id") == camera_id and e.get("track_id") == track_id)
+                ]
+                removed = len(old_embs) - len(new_embs)
+                ident["embeddings"] = new_embs
+                ident["tracks"] = [
+                    t for t in ident.get("tracks", [])
+                    if not (t.get("camera_id") == camera_id and t.get("track_id") == track_id)
+                ]
+                ident["cameras_seen"] = {t["camera_id"] for t in ident["tracks"] if "camera_id" in t}
+                self.save()
+                return removed
+            return 0
             
     def get_identity(self, gid: str) -> Optional[Any]:
         with self.lock:

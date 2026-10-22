@@ -56,7 +56,7 @@ class CandidateFilter:
             if isinstance(identity, GlobalIdentityState):
                 last_cam = identity.current_camera
                 last_zone = identity.current_zone or last_cam
-                last_seen = identity.last_seen_timestamp
+                last_seen = identity.last_seen_timestamp if identity.last_seen_timestamp is not None else 0.0
                 last_trans = identity.last_transition_id
                 last_dir = identity.last_transition_direction
                 last_trans_time = identity.last_transition_timestamp or last_seen
@@ -66,23 +66,23 @@ class CandidateFilter:
             elif isinstance(identity, dict):
                 last_cam = identity.get("current_camera") or identity.get("last_camera")
                 last_zone = identity.get("current_zone") or last_cam
-                last_seen = float(identity.get("last_seen_timestamp", 0.0))
+                last_seen = float(identity.get("last_seen_timestamp") or identity.get("last_seen_time") or identity.get("last_seen", 0.0))
                 last_trans = identity.get("last_transition_id")
                 last_dir = identity.get("last_transition_direction")
-                last_trans_time = float(identity.get("last_transition_timestamp", last_seen))
+                last_trans_time = float(identity.get("last_transition_timestamp") or identity.get("last_transition_time") or last_seen)
                 last_trans_target_cam = identity.get("last_transition_target_camera")
                 last_trans_target_zone = identity.get("last_transition_target_zone")
                 status = identity.get("status", "ACTIVE")
             else:
-                last_cam = getattr(identity, "last_camera", None)
-                last_zone = last_cam
-                last_seen = getattr(identity, "last_seen", 0.0)
-                last_trans = None
-                last_dir = None
-                last_trans_time = last_seen
-                last_trans_target_cam = None
-                last_trans_target_zone = None
-                status = "ACTIVE"
+                last_cam = getattr(identity, "last_camera", getattr(identity, "current_camera", None))
+                last_zone = getattr(identity, "last_zone", getattr(identity, "current_zone", last_cam))
+                last_seen = getattr(identity, "last_seen_timestamp", getattr(identity, "last_seen_time", getattr(identity, "last_seen", 0.0)))
+                last_trans = getattr(identity, "last_transition_id", None)
+                last_dir = getattr(identity, "last_transition_direction", None)
+                last_trans_time = getattr(identity, "last_transition_timestamp", getattr(identity, "last_transition_time", last_seen))
+                last_trans_target_cam = getattr(identity, "last_transition_target_camera", None)
+                last_trans_target_zone = getattr(identity, "last_transition_target_zone", None)
+                status = getattr(identity, "status", "ACTIVE")
 
             # Reacquisition timing constraints are evaluated downstream by TemporalGate
 
@@ -90,19 +90,37 @@ class CandidateFilter:
             # 1. TOPOLOGY GATE (Hard Constraint)
             # -------------------------------------------------------------
             if last_cam and not self.topology_gate.is_transition_valid(last_zone, current_zone):
-                reason = f"TOPOLOGY_REJECT ({last_zone} -> {current_zone} impossible)"
+                reason = f"TOPOLOGY_REJECTED ({last_zone} -> {current_zone} impossible)"
                 rejected[gid] = reason
                 continue
 
             # Check if this candidate has a validated transition handoff to current_camera
             has_validated_trans = False
+            last_cand_zones = getattr(identity, "last_transition_candidate_zones", []) or []
+            if isinstance(identity, dict):
+                last_cand_zones = identity.get("last_transition_candidate_zones", []) or identity.get("candidate_zones", []) or []
+
             time_since_trans = max(0.0, current_time - last_trans_time) if last_trans_time > 0.0 else 999.0
-            if last_trans and last_cam != current_camera and time_since_trans < 45.0:
+            is_internal_movement = (last_trans_time > 0.0 and (last_seen - last_trans_time) > 3.5)
+            is_inward_direction = (last_cand_zones == [last_cam] or last_trans_target_cam == last_cam)
+
+            if (
+                last_trans and
+                last_cam != current_camera and
+                time_since_trans <= 15.0 and
+                not is_internal_movement and
+                not is_inward_direction
+            ):
                 if last_trans_target_cam == current_camera or (last_trans_target_zone and last_trans_target_zone == current_zone):
+                    has_validated_trans = True
+                elif current_camera in last_cand_zones or current_zone in last_cand_zones:
                     has_validated_trans = True
                 elif hasattr(self.spatial_gate, "rules") and self.spatial_gate.rules:
                     for rule in self.spatial_gate.rules:
                         if rule.get("from_camera") == last_cam and rule.get("transition") == last_trans:
+                            rule_dir = rule.get("direction")
+                            if rule_dir and last_dir and rule_dir != last_dir:
+                                continue
                             if current_camera in rule.get("candidate_zones", []):
                                 has_validated_trans = True
                                 break
@@ -133,7 +151,8 @@ class CandidateFilter:
                 time_since_transition=time_since_trans,
                 target_camera=last_trans_target_cam,
                 source_last_seen=last_seen,
-                trans_timestamp=last_trans_time
+                trans_timestamp=last_trans_time,
+                candidate_zones=last_cand_zones
             )
 
             if not is_spatial_valid:
@@ -150,7 +169,9 @@ class CandidateFilter:
                 "temporal_reason": temp_reason,
                 "spatial_score": spatial_score,
                 "spatial_reason": spatial_reason,
-                "last_transition_id": last_trans
+                "last_transition_id": last_trans,
+                "last_seen_timestamp": last_seen,
+                "time_since_transition": time_since_trans
             }
 
         return valid_gids, evaluations, rejected

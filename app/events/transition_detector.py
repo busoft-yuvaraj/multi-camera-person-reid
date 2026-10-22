@@ -1,6 +1,6 @@
 import math
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from typing import Dict, List, Tuple, Optional, Any
 
 @dataclass
@@ -17,6 +17,12 @@ class TransitionEvent:
     global_id: Optional[str] = None
     target_camera: Optional[str] = None
     target_zone: Optional[str] = None
+    candidate_destinations: List[str] = field(default_factory=list)
+    candidate_zones: List[str] = field(default_factory=list)
+    status: str = "PENDING"
+    bbox: Optional[Tuple[float, float, float, float]] = None
+    quality: float = 1.0
+    embedding: Optional[Any] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -30,6 +36,7 @@ class TransitionDetector:
         foot_y = y2
     Features:
         - Multi-line support per camera.
+        - Multi-destination candidate resolution based on crossing direction.
         - Signed cross-product side determination.
         - Multi-frame confirmation & minimum movement to eliminate boundary jitter.
         - Cooldown / debounce frames per track to prevent duplicate triggering.
@@ -55,11 +62,19 @@ class TransitionDetector:
             pts = cfg.get("points", {})
             start = pts.get("start", [0, 0])
             end = pts.get("end", [0, 0])
+            
+            cands = cfg.get("candidate_destinations", cfg.get("candidate_zones", []))
+            if not cands and cfg.get("target_camera"):
+                cands = [cfg["target_camera"]]
+            dir_dests = cfg.get("directions", cfg.get("direction_destinations", {}))
+            
             self.lines[trans_id] = {
                 "start": (float(start[0]), float(start[1])),
                 "end": (float(end[0]), float(end[1])),
-                "target_camera": cfg.get("target_camera"),
-                "target_zone": cfg.get("target_zone")
+                "target_camera": cfg.get("target_camera", cands[0] if len(cands) == 1 else None),
+                "target_zone": cfg.get("target_zone", cands[0] if len(cands) == 1 else None),
+                "candidate_destinations": list(cands),
+                "direction_destinations": dict(dir_dests)
             }
 
         # State tracking:
@@ -154,6 +169,15 @@ class TransitionDetector:
             self.last_trigger_frame[key] = frame_idx
             self.side_history_count[key] = 1
 
+            # Resolve candidate destinations based on crossing direction
+            cand_dests = list(line_info.get("candidate_destinations", []))
+            dir_dests = line_info.get("direction_destinations", {})
+            if direction in dir_dests:
+                cand_dests = list(dir_dests[direction])
+
+            target_cam = cand_dests[0] if len(cand_dests) == 1 else line_info.get("target_camera")
+            target_zone = cand_dests[0] if len(cand_dests) == 1 else line_info.get("target_zone")
+
             event = TransitionEvent(
                 event="TRANSITION_CROSSED",
                 camera_id=self.camera_id,
@@ -165,8 +189,12 @@ class TransitionDetector:
                 direction=direction,
                 foot_point=foot_point,
                 global_id=global_id,
-                target_camera=line_info.get("target_camera"),
-                target_zone=line_info.get("target_zone")
+                target_camera=target_cam,
+                target_zone=target_zone,
+                candidate_destinations=list(cand_dests),
+                candidate_zones=list(cand_dests),
+                status="PENDING",
+                bbox=bbox
             )
             events.append(event)
 

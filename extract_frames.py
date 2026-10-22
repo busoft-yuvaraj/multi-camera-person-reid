@@ -52,8 +52,9 @@ def extract_frames(input_dir, output_dir, frame_interval):
     print(f"\nDone! Extracted a total of {total_extracted} frames to '{output_dir}'.")
 
 if __name__ == "__main__":
+    default_input = "cctv_samples" if os.path.exists("cctv_samples") else ("D:/cctv_samples" if os.path.exists("D:/cctv_samples") else "cctv_samples")
     parser = argparse.ArgumentParser(description="Extract frames from CCTV videos for annotation")
-    parser.add_argument("--input_dir", type=str, default="cctv_samples", help="Directory containing videos")
+    parser.add_argument("--input_dir", type=str, default=default_input, help="Directory containing videos")
     parser.add_argument("--output_dir", type=str, default="cctv_frames", help="Directory to save extracted frames")
     parser.add_argument("--interval", type=int, default=30, help="Extract 1 frame every N frames (30 = approx 2 frames per second, good for fast movement)")
     

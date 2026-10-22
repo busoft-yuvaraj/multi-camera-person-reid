@@ -4,12 +4,14 @@ import argparse
 from ultralytics import YOLO
 
 
+from app.utils.path_resolver import resolve_video_path, resolve_output_path
+
 # =========================
 # CONFIG
 # =========================
 
-INPUT_PATH = "cctv_samples/frame"  # Can be a folder of videos or a single video file
-OUTPUT_DIR = "reid_crops"
+INPUT_PATH = resolve_video_path("cctv_samples/frame")  # Can be a folder of videos or a single video file
+OUTPUT_DIR = resolve_output_path("output/reid_crops")
 
 MODEL_PATH = "yolo11n.pt"
 TRACKER_CONFIG = "botsort.yaml"

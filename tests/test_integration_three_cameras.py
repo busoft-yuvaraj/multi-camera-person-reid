@@ -8,6 +8,7 @@ from app.multi_camera_processor import MultiCameraProcessor
 from app.reid.global_gallery import GlobalGallery
 from app.reid.matcher import GlobalMatcher
 from app.reid.extractors.attire_extractor import AttireExtractor
+from app.utils.path_resolver import resolve_video_path, resolve_output_path
 
 class DummyExtractor:
     def extract(self, crops):
@@ -29,17 +30,17 @@ def test_three_cameras_initialization_and_frames():
     if "cameras" in config:
         cams = config["cameras"]
         cameras_info = [
-            {"camera_id": "waiting_lobby", "video_path": cams.get("waiting_lobby", {}).get("video_path", "cctv_samples/waiting_lobby.mp4")},
-            {"camera_id": "pantry", "video_path": cams.get("pantry", {}).get("video_path", "cctv_samples/pantry.mp4")},
-            {"camera_id": "passage", "video_path": cams.get("passage", {}).get("video_path", "cctv_samples/passage1.mp4")}
+            {"camera_id": "waiting_lobby", "video_path": resolve_video_path(cams.get("waiting_lobby", {}).get("video_path", "D:/cctv_samples/waiting_lobby.mp4"))},
+            {"camera_id": "pantry", "video_path": resolve_video_path(cams.get("pantry", {}).get("video_path", "D:/cctv_samples/pantry.mp4"))},
+            {"camera_id": "passage", "video_path": resolve_video_path(cams.get("passage", {}).get("video_path", "D:/cctv_samples/passage1.mp4"))}
         ]
     else:
         v_cfg = config.get("violation_detection", {})
         cams = v_cfg.get("cameras", {})
         cameras_info = [
-            {"camera_id": "waiting_lobby", "video_path": cams["waiting_lobby"]["video_path"]},
-            {"camera_id": "pantry", "video_path": cams["pantry"]["video_path"]},
-            {"camera_id": "passage_1", "video_path": cams.get("passage_1", {}).get("video_path", "cctv_samples/passage1.mp4")}
+            {"camera_id": "waiting_lobby", "video_path": resolve_video_path(cams["waiting_lobby"]["video_path"])},
+            {"camera_id": "pantry", "video_path": resolve_video_path(cams["pantry"]["video_path"])},
+            {"camera_id": "passage_1", "video_path": resolve_video_path(cams.get("passage_1", {}).get("video_path", "D:/cctv_samples/passage1.mp4"))}
         ]
 
     # Verify video files exist
@@ -57,7 +58,7 @@ def test_three_cameras_initialization_and_frames():
 
     processor = MultiCameraProcessor(
         cameras_info=cameras_info,
-        output_path="output/test_combined_3cams.mp4",
+        output_path=resolve_output_path("output/test_combined_3cams.mp4"),
         config=config,
         extractor=DummyExtractor(),
         par_extractor=DummyParExtractor(),

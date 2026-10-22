@@ -1,10 +1,11 @@
 import cv2
 from ultralytics import YOLO
 import sys
+from app.utils.path_resolver import resolve_video_path
 
 def test_botsort_tracking():
     # Path to one of your videos
-    video_path = "cctv_samples/pass3.mp4"
+    video_path = resolve_video_path("cctv_samples/pass3.mp4")
     model_path = "yolo11m.pt"
     
     print(f"Loading YOLO model from {model_path}...")

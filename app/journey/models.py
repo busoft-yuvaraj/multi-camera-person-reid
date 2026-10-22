@@ -8,8 +8,11 @@ class IdentityStatus(str, Enum):
     CONFIRMED = "CONFIRMED"
     ACTIVE = "ACTIVE"
     TEMPORARILY_LOST = "TEMPORARILY_LOST"
+    OCCLUDED = "TEMPORARILY_LOST"
     REACQUIRABLE = "REACQUIRABLE"
     EXPIRED = "EXPIRED"
+    DORMANT = "EXPIRED"
+    UNKNOWN = "UNKNOWN"
 
 @dataclass
 class JourneyEvent:
@@ -59,6 +62,8 @@ class GlobalIdentityState:
     last_transition_direction: Optional[str] = None
     last_transition_target_camera: Optional[str] = None
     last_transition_target_zone: Optional[str] = None
+    last_transition_candidate_zones: List[str] = field(default_factory=list)
+    last_transition_status: str = "PENDING"
     
     # ROI metadata
     current_roi: Optional[str] = None

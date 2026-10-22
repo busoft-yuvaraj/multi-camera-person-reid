@@ -5,6 +5,7 @@ import logging
 import cv2
 import numpy as np
 from typing import Optional, Dict, Any, Tuple
+from app.utils.path_resolver import resolve_output_path
 
 class EvidenceManager:
     """
@@ -12,7 +13,7 @@ class EvidenceManager:
     for detected route/attire violations.
     """
     def __init__(self, output_dir: str = "output/violations", enabled: bool = True, save_image: bool = True, save_metadata: bool = True):
-        self.output_dir = output_dir
+        self.output_dir = resolve_output_path(output_dir)
         self.enabled = enabled
         self.save_image = save_image
         self.save_metadata = save_metadata

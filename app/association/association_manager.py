@@ -46,6 +46,26 @@ class AssociationManager:
         # -> hysteresis tracking: candidate wishing to switch
         self.hysteresis_candidate: Dict[Tuple[str, int], str] = {}
         self.hysteresis_counters: Dict[Tuple[str, int], int] = {}
+        # -> first seen timestamp per track to enforce spacetime non-overlapping coexistence constraints
+        self.track_first_seen: Dict[Tuple[str, int], float] = {}
+        # -> conflict retries tracking per (camera_id, local_track_id)
+        self.conflict_counters: Dict[Tuple[str, int], int] = {}
+        # -> GIDs excluded for track due to sustained conflict timeout
+        self.conflict_excluded_gids: Dict[Tuple[str, int], Set[str]] = {}
+
+    def reset_track(self, camera_id: str, local_track_id: int):
+        """
+        Cleans up association, pending, and conflict state for a terminated or lost track.
+        """
+        key = (camera_id, local_track_id)
+        self.pending_candidate.pop(key, None)
+        self.pending_counters.pop(key, None)
+        self.no_match_counters.pop(key, None)
+        self.hysteresis_candidate.pop(key, None)
+        self.hysteresis_counters.pop(key, None)
+        self.conflict_counters.pop(key, None)
+        self.conflict_excluded_gids.pop(key, None)
+        self.track_first_seen.pop(key, None)
 
     def associate_track(
         self,
@@ -66,6 +86,7 @@ class AssociationManager:
             'NEW'     -> New Global ID spawned after sustained absence of candidate match
         """
         key = (camera_id, local_track_id)
+        self.track_first_seen.setdefault(key, current_time)
         current_gid = self.journey_manager.active_tracks.get(key)
         if current_gid is None:
             # Fallback check across identities
@@ -192,7 +213,7 @@ class AssociationManager:
         for gid in set(gallery_identities.keys()).union(journey_identities.keys()):
             filter_identities[gid] = journey_identities[gid] if gid in journey_identities else gallery_identities[gid]
 
-        camera_occupied_gids = set(active_camera_gids)
+        camera_occupied_gids = set(active_camera_gids) | self.conflict_excluded_gids.get(key, set())
 
         valid_gids, evals, rejections = self.candidate_filter.filter_candidates(
             identities=filter_identities,
@@ -242,7 +263,7 @@ class AssociationManager:
                 self.pending_counters[key] = 0
 
                 decision_data["selected_global_id"] = new_gid
-                decision_data["decision"] = "NEW_GLOBAL_ID_CREATED"
+                decision_data["decision"] = "NEW_ID_CREATED"
                 self.store.log_association_decision(decision_data)
                 return new_gid, "MATCHED", 1.0, decision_data
             else:
@@ -257,11 +278,12 @@ class AssociationManager:
         decision_data["qdrant_scores"] = {k: round(v, 3) for k, v in qdrant_scores.items()}
 
         # -------------------------------------------------------------
-        # Step 4: Multi-Signal Composite Scoring on Valid Candidates
+        # Step 4: Multi-Signal Composite Scoring on Candidates
         # -------------------------------------------------------------
-        scored_candidates = []
-        for cand_gid in valid_gids:
-            ident = gallery_identities.get(cand_gid)
+        # Score ALL gallery identities to obtain true gallery runner-ups and detect
+        # if the top visual match was rejected due to an ownership conflict.
+        all_scored_candidates = []
+        for cand_gid, ident in gallery_identities.items():
             if not ident:
                 continue
             p_count = self.pending_counters.get(key, 1)
@@ -273,7 +295,6 @@ class AssociationManager:
                 current_camera=camera_id,
                 consecutive_candidate_count=p_count
             )
-            # Factor in spatial & temporal gate scores as supporting multiplier (bypassed if pure ReID testing mode)
             cand_eval = evals.get(cand_gid, {})
             t_score = cand_eval.get("temporal_score", 1.0)
             s_score = cand_eval.get("spatial_score", 1.0)
@@ -282,11 +303,23 @@ class AssociationManager:
             else:
                 gate_factor = 0.92 + 0.04 * min(1.0, t_score) + 0.04 * min(1.0, s_score)
                 adjusted_score = score * gate_factor
-            scored_candidates.append((cand_gid, float(adjusted_score), details))
+            all_scored_candidates.append((cand_gid, float(adjusted_score), details))
 
-        scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        all_scored_candidates.sort(key=lambda x: x[1], reverse=True)
+        top_overall_gid, top_overall_sim, _ = all_scored_candidates[0]
+
+        # Valid candidates that passed topology, temporal, and spatial gates
+        scored_candidates = [c for c in all_scored_candidates if c[0] in valid_gids]
+
+        if not scored_candidates:
+            self.no_match_counters[key] = self.no_match_counters.get(key, 0) + 1
+            decision_data["decision"] = "NO_VALID_CANDIDATES_SCORED"
+            self.store.log_association_decision(decision_data)
+            return None, "PENDING", 0.0, decision_data
+
         best_gid, best_sim, best_details = scored_candidates[0]
-        second_sim = scored_candidates[1][1] if len(scored_candidates) > 1 else 0.0
+        gallery_runner_ups = [c[1] for c in all_scored_candidates if c[0] != best_gid]
+        second_sim = gallery_runner_ups[0] if gallery_runner_ups else 0.0
         margin = best_sim - second_sim
 
         decision_data["top_candidate"] = best_gid
@@ -296,7 +329,7 @@ class AssociationManager:
         decision_data["candidate_details"] = best_details
 
         # -------------------------------------------------------------
-        # Step 5: Multi-Frame Confirmation & Promotion
+        # Step 5: Multi-Frame Confirmation & Promotion with Alternative Evaluation
         # -------------------------------------------------------------
         thresh_match = float(self.config.get("threshold_match", 0.70))
         thresh_ambig = float(self.config.get("threshold_ambiguous", 0.60))
@@ -304,78 +337,241 @@ class AssociationManager:
         ambig_margin = float(self.config.get("reid_ambiguous_margin", 0.04))
         pending_promote_frames = int(self.config.get("pending_confirm_frames", 3))
 
-        is_cross = best_details.get("is_cross_view", False)
+        conflict_rejections = {}
+        pending_result = None
 
-        cand_eval = evals.get(best_gid, {})
-        has_matching_transition = (cand_eval.get("spatial_score", 0.0) >= 0.95)
+        for idx, (cand_gid, cand_sim, cand_details) in enumerate(scored_candidates):
+            # True margin against other non-conflicted identities in the gallery
+            gallery_others = [c[1] for c in all_scored_candidates if c[0] != cand_gid and c[0] not in conflict_rejections]
+            gallery_runner_up_sim = gallery_others[0] if gallery_others else 0.0
+            gallery_margin = cand_sim - gallery_runner_up_sim
 
-        # Immediate Confirmation Check
-        if (best_sim >= thresh_match or (has_matching_transition and best_sim >= max(0.65, thresh_match - 0.05))) and (margin >= ambig_margin or second_sim == 0.0):
-            # Confirm immediately!
-            confirmed = self.journey_manager.confirm_association(
-                global_id=best_gid,
-                camera_id=camera_id,
-                zone=zone,
-                local_track_id=local_track_id,
-                timestamp=current_time,
-                frame_idx=frame_idx,
-                decision_reason=f"CONFIRMED_MATCH (Score={best_sim:.2f}, Margin={margin:.2f})",
-                decision_details=decision_data
+            # Candidate margin must be compared against both the next valid candidate AND all gallery identities.
+            # A candidate must never be promoted or confirmed if any other gallery identity has higher visual similarity (gallery_margin < 0).
+            next_sim = scored_candidates[idx + 1][1] if idx + 1 < len(scored_candidates) else 0.0
+            valid_margin = (cand_sim - next_sim) if next_sim > 0.0 else gallery_margin
+            cand_margin = min(valid_margin, gallery_margin)
+
+            is_cross = cand_details.get("is_cross_view", False)
+            cand_eval = evals.get(cand_gid, {})
+            cand_last_cam = cand_eval.get("last_camera")
+            is_cross_camera = bool(cand_last_cam and cand_last_cam != camera_id)
+            time_since_trans = cand_eval.get("time_since_transition", 999.0)
+            has_matching_transition = bool(
+                cand_eval.get("last_transition_id") and
+                is_cross_camera and
+                time_since_trans <= 15.0 and
+                cand_eval.get("spatial_score", 0.0) >= 0.95
             )
-            if confirmed:
-                self.pending_candidate[key] = None
-                self.pending_counters[key] = 0
-                self.no_match_counters[key] = 0
-                decision_data["decision"] = "CONFIRMED"
-                decision_data["selected_global_id"] = best_gid
-                self.store.log_association_decision(decision_data)
-                return best_gid, "MATCHED", best_sim, decision_data
-            else:
-                self.pending_candidate[key] = best_gid
-                self.pending_counters[key] = 1
-                decision_data["decision"] = f"PENDING_CANDIDATE ({best_gid}, 1/{pending_promote_frames})"
-                self.store.log_association_decision(decision_data)
-                return best_gid, "PENDING", best_sim, decision_data
+            is_overlap = bool(
+                cand_eval.get("is_overlapping_view", False) or
+                "OVERLAPPING_VIEW" in cand_eval.get("temporal_reason", "")
+            )
 
-        # PENDING Candidate Check (borderline or cross-view awaiting evidence)
-        elif (is_cross and best_sim >= thresh_cross) or (best_sim >= thresh_ambig) or (has_matching_transition and best_sim >= 0.55):
+            cand_last_seen = float(cand_eval.get("last_seen_timestamp", 0.0) or 0.0)
+            track_start_time = self.track_first_seen.get(key, current_time)
+
+            # Spacetime Simultaneous Coexistence Constraint (Hard Physical Rule):
+            # A single person cannot exist simultaneously across non-overlapping camera regions.
+            # If this track was already active in this camera while the candidate was still being
+            # observed in another non-overlapping camera (tolerance 0.5s), they coexisted simultaneously
+            # and cannot physically be the same human.
+            is_simultaneous_conflict = (
+                is_cross_camera and
+                not is_overlap and
+                cand_last_seen > 0.0 and
+                (track_start_time < (cand_last_seen - 0.5))
+            )
+
             prev_cand = self.pending_candidate.get(key)
-            if prev_cand == best_gid:
-                self.pending_counters[key] = self.pending_counters.get(key, 0) + 1
-            else:
-                self.pending_candidate[key] = best_gid
-                self.pending_counters[key] = 1
+            p_count = (self.pending_counters.get(key, 0) + 1) if prev_cand == cand_gid else 1
 
-            p_count = self.pending_counters[key]
-            decision_data["pending_count"] = p_count
-            decision_data["pending_threshold"] = pending_promote_frames
+            # Safeguard 5: If the actual top gallery candidate is occupied in this camera (camera_occupied_gids),
+            # an alternative candidate must not be confirmed if the track genuinely matches the occupied
+            # top candidate better ((top_overall_sim - cand_sim) > ambig_margin) and lacks a validated
+            # matching transition above the match threshold.
+            is_occupied_top = (top_overall_gid in camera_occupied_gids)
+            is_conflicted_with_occupied_top = (
+                is_occupied_top and
+                top_overall_gid != cand_gid and
+                ((top_overall_sim - cand_sim) > ambig_margin) and
+                (cand_sim < thresh_match or not has_matching_transition)
+            )
 
-            if p_count >= pending_promote_frames or (dom_view == "FRONT" and best_sim >= max(0.68, thresh_match - 0.02)) or (has_matching_transition and best_sim >= max(0.60, thresh_match - 0.08)):
+            # If a prior candidate in scored_candidates was rejected during this evaluation loop
+            # due to an ownership conflict, an alternative candidate must not be confirmed
+            # if it is visually ambiguous with the top conflicted candidate or below match threshold.
+            is_ambiguous_with_conflicted_candidate = (
+                idx > 0 and
+                len(conflict_rejections) > 0 and
+                (((scored_candidates[0][1] - cand_sim) < ambig_margin) or cand_sim < thresh_match)
+            )
+
+            # Immediate Confirmation Check:
+            # Enforce meaningful association confidence without relying on next_sim == 0 shortcut.
+            # When next_sim > 0.0: candidate must exceed margin over runner-up (cand_margin >= ambig_margin).
+            # When next_sim == 0.0 (no competing valid candidates): candidate must have solid confidence above threshold
+            # and positive margin over gallery alternatives (cand_margin >= 0.0 or has_matching_transition).
+            has_sufficient_confidence = (
+                (cand_margin >= ambig_margin) if next_sim > 0.0
+                else ((cand_sim >= (thresh_match - 1e-4) and cand_margin >= 0.0) or has_matching_transition)
+            )
+
+            qualifies_immediate = (
+                (cand_sim >= (thresh_match - 1e-4) or (has_matching_transition and cand_sim >= max(0.65, thresh_match - 0.05)))
+                and has_sufficient_confidence
+                and not is_conflicted_with_occupied_top
+                and not is_ambiguous_with_conflicted_candidate
+                and not is_simultaneous_conflict
+            )
+
+            # Sustained Pending Promotion Check
+            # - For cross-camera transitions with matching transition: sub-threshold promotion allowed after sustained checks.
+            # - WITHOUT a matching transition: cross-camera association requires solid confidence (cand_sim >= min(thresh_match, 0.70))
+            #   and clear margin over gallery runner-ups (cand_margin >= ambig_margin). Sub-threshold scores (0.50-0.65) cannot be promoted.
+            # - For same-camera reacquisition: requires match threshold (or near-threshold front view).
+            # - In ALL cases: cand_margin must be non-negative (never promote a candidate when another candidate in gallery scored higher).
+            qualifies_pending_promotion = (
+                ((idx == 0 or idx == len(conflict_rejections)) and is_cross_camera and has_matching_transition and p_count >= pending_promote_frames and (cand_sim >= thresh_ambig or (is_cross and cand_sim >= thresh_cross))) or
+                ((idx == 0 or idx == len(conflict_rejections)) and is_cross_camera and not has_matching_transition and p_count >= pending_promote_frames and cand_sim >= (min(thresh_match, 0.70) - 1e-4) and cand_margin >= ambig_margin) or
+                (not is_cross_camera and cand_sim >= (thresh_match - 1e-4) and p_count >= pending_promote_frames) or
+                (dom_view == "FRONT" and cand_sim >= max(0.68, thresh_match - 0.02) and p_count >= max(2, pending_promote_frames) and cand_margin >= 0) or
+                (has_matching_transition and cand_sim >= max(0.60, thresh_match - 0.08) and p_count >= 2 and cand_margin >= 0)
+            ) and (cand_margin >= 0.0) and not is_conflicted_with_occupied_top and not is_ambiguous_with_conflicted_candidate and not is_simultaneous_conflict
+
+            if qualifies_immediate or qualifies_pending_promotion:
+                reason = (
+                    f"CONFIRMED_MATCH (Score={cand_sim:.2f}, Margin={cand_margin:.2f})"
+                    if qualifies_immediate
+                    else f"CONFIRMED_FROM_PENDING ({p_count} sustained checks)"
+                )
+                cand_decision_data = dict(decision_data)
+                cand_decision_data["evaluating_candidate"] = cand_gid
+                cand_decision_data["evaluating_score"] = round(cand_sim, 3)
+                cand_decision_data["is_overlapping_view"] = is_overlap
+                cand_decision_data["has_matching_transition"] = has_matching_transition
+
                 confirmed = self.journey_manager.confirm_association(
-                    global_id=best_gid,
+                    global_id=cand_gid,
                     camera_id=camera_id,
                     zone=zone,
                     local_track_id=local_track_id,
                     timestamp=current_time,
                     frame_idx=frame_idx,
-                    decision_reason=f"CONFIRMED_FROM_PENDING ({p_count} sustained checks)",
-                    decision_details=decision_data
+                    decision_reason=reason,
+                    decision_details=cand_decision_data,
+                    is_overlapping_view=is_overlap
                 )
                 if confirmed:
                     self.pending_candidate[key] = None
                     self.pending_counters[key] = 0
                     self.no_match_counters[key] = 0
-                    decision_data["decision"] = "CONFIRMED_FROM_PENDING"
-                    decision_data["selected_global_id"] = best_gid
+                    self.conflict_counters.pop(key, None)
+                    self.conflict_excluded_gids.pop(key, None)
+                    decision_data["conflict_rejections"] = conflict_rejections
+                    decision_data["decision"] = "MATCH_CONFIRMED" if qualifies_immediate else "CONFIRMED_FROM_PENDING"
+                    if idx > 0:
+                        decision_data["decision"] += f"_ALTERNATIVE ({cand_gid} after top conflict)"
+                    decision_data["selected_global_id"] = cand_gid
+                    decision_data["selected_score"] = round(cand_sim, 3)
                     self.store.log_association_decision(decision_data)
-                    return best_gid, "MATCHED", best_sim, decision_data
+                    return cand_gid, "MATCHED", cand_sim, decision_data
                 else:
-                    decision_data["decision"] = f"CONFLICT_DEFERRED ({best_gid})"
-                    self.store.log_association_decision(decision_data)
-                    return best_gid, "PENDING", best_sim, decision_data
+                    conflict_rejections[cand_gid] = "REJECTED_BY_JOURNEY_MANAGER_CONFLICT"
+                    continue
             else:
-                self.no_match_counters[key] = 0
-                decision_data["decision"] = f"PENDING_CANDIDATE ({best_gid}, {p_count}/{pending_promote_frames})"
+                # Candidate did not qualify for confirmation.
+                # Check if it qualifies for pending.
+                is_same_camera = not is_cross_camera
+
+                if is_same_camera:
+                    cand_qualifies_pending = (
+                        (is_cross and cand_sim >= thresh_cross) or
+                        (cand_sim >= thresh_ambig)
+                    )
+                elif has_matching_transition:
+                    cand_qualifies_pending = (cand_sim >= 0.55)
+                else:
+                    # Cross-camera WITHOUT matching transition:
+                    # Candidate must meet ambiguous threshold (default 0.60) and be non-negative runner-up
+                    cand_qualifies_pending = (
+                        cand_sim >= thresh_ambig and
+                        cand_margin >= 0.0
+                    )
+
+                qualifies_pending = (
+                    not is_simultaneous_conflict and
+                    not is_conflicted_with_occupied_top and
+                    cand_qualifies_pending
+                )
+
+                if qualifies_pending and pending_result is None:
+                    pending_result = (cand_gid, cand_sim, cand_details, p_count)
+
+                # Do NOT evaluate lower-scoring alternative candidates when this candidate
+                # was NOT rejected by conflict! A lower-scoring runner-up can NEVER be confirmed
+                # over a superior candidate that is merely awaiting multi-frame confirmation.
+                break
+
+        decision_data["conflict_rejections"] = conflict_rejections
+
+        # If an eligible pending candidate was found and not confirmed
+        if pending_result is not None:
+            p_gid, p_sim, p_details, p_cnt = pending_result
+            prev_cand = self.pending_candidate.get(key)
+            if prev_cand == p_gid:
+                self.pending_counters[key] = self.pending_counters.get(key, 0) + 1
+            else:
+                self.pending_candidate[key] = p_gid
+                self.pending_counters[key] = 1
+
+            p_count = self.pending_counters[key]
+            decision_data["pending_count"] = p_count
+            decision_data["pending_threshold"] = pending_promote_frames
+            self.no_match_counters[key] = 0
+            if conflict_rejections:
+                decision_data["decision"] = f"IDENTITY_CONFLICT_DEFERRED ({p_gid})"
+            elif len(scored_candidates) > 1 and (scored_candidates[0][1] - scored_candidates[1][1]) < ambig_margin:
+                decision_data["decision"] = f"AMBIGUOUS_MATCH ({p_gid} vs {scored_candidates[1][0]}, margin={margin:.2f})"
+            else:
+                decision_data["decision"] = f"PENDING_CANDIDATE ({p_gid}, {p_count}/{pending_promote_frames})"
+            self.store.log_association_decision(decision_data)
+            return p_gid, "PENDING", p_sim, decision_data
+
+        # If candidates were rejected due to conflict, defer with CONFLICT_DEFERRED
+        if conflict_rejections:
+            top_conflicted_gid = next(iter(conflict_rejections.keys()))
+            prev_cand = self.pending_candidate.get(key)
+            if prev_cand == top_conflicted_gid:
+                self.pending_counters[key] = self.pending_counters.get(key, 0) + 1
+            else:
+                self.pending_candidate[key] = top_conflicted_gid
+                self.pending_counters[key] = 1
+
+            p_count = self.pending_counters[key]
+            decision_data["pending_count"] = p_count
+            decision_data["decision"] = f"CONFLICT_DEFERRED ({top_conflicted_gid})"
+            self.no_match_counters[key] = 0
+            self.store.log_association_decision(decision_data)
+            return top_conflicted_gid, "PENDING", best_sim, decision_data
+
+        # If there are valid candidates with matching transition handoff or early evidence collection,
+        # preserve the candidate association as PENDING rather than prematurely spawning a new Global ID.
+        if valid_gids and (has_matching_transition or len(bank_embeddings) < 6):
+            cand_eval = evals.get(best_gid, {})
+            c_last_seen = float(cand_eval.get("last_seen_timestamp", 0.0) or 0.0)
+            c_last_cam = cand_eval.get("last_camera")
+            c_is_cross = bool(c_last_cam and c_last_cam != camera_id)
+            track_start = self.track_first_seen.get(key, current_time)
+            c_is_simultaneous = (
+                c_is_cross and
+                not is_overlap and
+                c_last_seen > 0.0 and
+                (track_start < (c_last_seen - 0.5))
+            )
+            if not c_is_simultaneous:
+                self.pending_candidate[key] = best_gid
+                decision_data["decision"] = f"PENDING_AWAITING_QUALITY ({best_gid}, score={best_sim:.2f})"
                 self.store.log_association_decision(decision_data)
                 return best_gid, "PENDING", best_sim, decision_data
 
@@ -398,8 +594,10 @@ class AssociationManager:
             self.no_match_counters[key] = 0
             self.pending_candidate[key] = None
             self.pending_counters[key] = 0
+            self.conflict_counters.pop(key, None)
+            self.conflict_excluded_gids.pop(key, None)
             decision_data["selected_global_id"] = new_gid
-            decision_data["decision"] = "NEW_GLOBAL_ID_CREATED"
+            decision_data["decision"] = "NEW_ID_CREATED"
             self.store.log_association_decision(decision_data)
             return new_gid, "MATCHED", 1.0, decision_data
 

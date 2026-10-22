@@ -21,11 +21,21 @@ class JourneyManager:
         self,
         store: JourneyStore,
         reacquisition_timeout_seconds: float = 20.0,
-        transition_rules: Optional[List[Dict[str, Any]]] = None
+        transition_rules: Optional[List[Dict[str, Any]]] = None,
+        topology: Optional[Dict[str, Any]] = None,
+        overlapping_camera_pairs: Optional[List[Any]] = None
     ):
         self.store = store
         self.reacquisition_timeout_seconds = reacquisition_timeout_seconds
         self.transition_rules = transition_rules or []
+        self.topology = topology or {
+            "pantry": ["waiting_lobby", "passage"],
+            "waiting_lobby": ["pantry", "passage"],
+            "passage": ["pantry", "waiting_lobby", "workspace"],
+            "workspace": ["passage"]
+        }
+        raw_pairs = overlapping_camera_pairs or []
+        self.overlapping_camera_pairs = [set(p) for p in raw_pairs]
         
         # Registry of all Global Identities: gid -> GlobalIdentityState
         self.identities: Dict[str, GlobalIdentityState] = {}
@@ -41,6 +51,9 @@ class JourneyManager:
         
         # Buffer of pending events for unconfirmed tracks: (camera_id, local_track_id) -> list of JourneyEvents
         self.pending_events: Dict[Tuple[str, int], List[JourneyEvent]] = {}
+        
+        # Last observed timestamp per active track: (camera_id, local_track_id) -> timestamp
+        self.track_last_seen: Dict[Tuple[str, int], float] = {}
 
     def get_identity(self, global_id: str) -> Optional[GlobalIdentityState]:
         return self.identities.get(global_id)
@@ -73,7 +86,7 @@ class JourneyManager:
             last_seen_timestamp=timestamp
         )
         self.identities[global_id] = state
-        self._set_active_mapping(camera_id, local_track_id, global_id)
+        self._set_active_mapping(camera_id, local_track_id, global_id, timestamp=timestamp)
 
         # Log creation event
         evt = JourneyEvent(
@@ -93,6 +106,11 @@ class JourneyManager:
         self._transfer_pending_events(camera_id, local_track_id, global_id)
         return state
 
+    def is_overlapping_pair(self, cam1: Optional[str], cam2: Optional[str]) -> bool:
+        if not cam1 or not cam2:
+            return False
+        return {cam1, cam2} in self.overlapping_camera_pairs
+
     def confirm_association(
         self,
         global_id: str,
@@ -102,7 +120,8 @@ class JourneyManager:
         timestamp: float,
         frame_idx: int,
         decision_reason: str = "CONFIRMED_MATCH",
-        decision_details: Optional[Dict[str, Any]] = None
+        decision_details: Optional[Dict[str, Any]] = None,
+        is_overlapping_view: bool = False
     ) -> bool:
         """
         Confirms that local track belongs to existing Global ID.
@@ -116,34 +135,31 @@ class JourneyManager:
         # -------------------------------------------------------------
         # Conflict Detection: Is this Global ID already active elsewhere?
         # -------------------------------------------------------------
-        current_active = self.gid_to_active_track.get(global_id)
-        if current_active is not None and current_active != (camera_id, local_track_id):
-            active_cam, active_tid = current_active
-            
+        active_entries = []
+        if global_id in self.gid_to_camera_tracks and self.gid_to_camera_tracks[global_id]:
+            for c_id, t_id in self.gid_to_camera_tracks[global_id].items():
+                if (c_id, t_id) != (camera_id, local_track_id):
+                    active_entries.append((c_id, t_id))
+        else:
+            current_active = self.gid_to_active_track.get(global_id)
+            if current_active is not None and current_active != (camera_id, local_track_id):
+                active_entries.append(current_active)
+
+        has_overlap = (
+            is_overlapping_view or
+            bool(decision_details and decision_details.get("is_overlapping_view")) or
+            (decision_reason in ["OVERLAPPING_VIEW", "SIMULTANEOUS_VISIBILITY"])
+        )
+
+        for active_cam, active_tid in active_entries:
             # Case 1: Same camera replacement (e.g. BoT-SORT dropped previous local track ID)
             if active_cam == camera_id:
-                logging.info(
-                    f"[JOURNEY] Track replacement in {camera_id}: {global_id} moved from Track {active_tid} to Track {local_track_id}"
-                )
-                self.active_tracks.pop((active_cam, active_tid), None)
-            else:
-                # Case 2: Cross-camera transition
-                # Real conflict only if seen simultaneously in two distinct cameras within < 1.0s
-                # UNLESS last transition was specifically directed towards camera_id or target zone!
-                is_expected_transition = False
-                if getattr(state, "last_transition_target_camera", None) == camera_id:
-                    is_expected_transition = True
-                elif getattr(state, "last_transition_target_zone", None) == zone:
-                    is_expected_transition = True
-                elif self.transition_rules and state.last_transition_id:
-                    for rule in self.transition_rules:
-                        if rule.get("from_camera") == active_cam and rule.get("transition") == state.last_transition_id:
-                            c_zones = rule.get("candidate_zones", [])
-                            if camera_id in c_zones or zone in c_zones:
-                                is_expected_transition = True
-                                break
-                time_diff = abs(timestamp - state.last_seen_timestamp)
-                if not is_expected_transition and time_diff < 1.0 and state.status == IdentityStatus.ACTIVE and active_cam != camera_id:
+                active_key = (active_cam, active_tid)
+                last_active_time = self.track_last_seen.get(active_key, state.last_seen_timestamp)
+                time_diff = abs(timestamp - last_active_time) if last_active_time is not None else 999.0
+                # True conflict if active_tid is still active in self.active_tracks and was observed within 2.0s
+                is_currently_active = (active_key in self.active_tracks) and (time_diff < 2.0)
+                if is_currently_active:
                     conflict_evt = JourneyEvent(
                         event="GLOBAL_ID_CONFLICT",
                         global_id=global_id,
@@ -153,7 +169,7 @@ class JourneyManager:
                         timestamp=timestamp,
                         frame_idx=frame_idx,
                         details={
-                            "reason": f"Simultaneous assignment: already active in {active_cam} (Track {active_tid})",
+                            "reason": f"Simultaneous assignment in same camera {camera_id}: already active on Track {active_tid} in current frame",
                             "conflict_camera": active_cam,
                             "conflict_track_id": active_tid
                         }
@@ -161,16 +177,78 @@ class JourneyManager:
                     state.add_event(conflict_evt)
                     self.store.log_event(conflict_evt)
                     logging.error(
-                        f"[CONFLICT] {global_id} already active in {active_cam} Track {active_tid}. "
-                        f"Cannot assign to {camera_id} Track {local_track_id} simultaneously!"
+                        f"[CONFLICT] {global_id} is currently active in same camera {camera_id} Track {active_tid}. "
+                        f"Cannot assign to Track {local_track_id} simultaneously!"
                     )
                     return False
                 else:
                     logging.info(
-                        f"[JOURNEY] Cross-camera association: {global_id} in {camera_id} (Track {local_track_id}) while also tracked in {active_cam} (Track {active_tid})"
+                        f"[JOURNEY] Track replacement in {camera_id}: {global_id} moved from Track {active_tid} to Track {local_track_id}"
+                    )
+                    self.active_tracks.pop((active_cam, active_tid), None)
+                    self.track_last_seen.pop((active_cam, active_tid), None)
+            else:
+                # Case 2: Cross-camera transition
+                is_overlap = has_overlap or self.is_overlapping_pair(camera_id, active_cam)
+                active_key = (active_cam, active_tid)
+                last_active_time = self.track_last_seen.get(active_key, state.last_seen_timestamp)
+                time_diff = abs(timestamp - last_active_time) if last_active_time is not None else 999.0
+
+                # When camera ROIs do not overlap, simultaneous presence is a strict physical impossibility.
+                if not is_overlap:
+                    is_transition_handoff = False
+                    if state.last_transition_source_camera == active_cam or (decision_details and decision_details.get("has_matching_transition")):
+                        target_matches = (
+                            state.last_transition_target_camera == camera_id or
+                            camera_id in (state.last_transition_candidate_zones or []) or
+                            bool(decision_details and decision_details.get("has_matching_transition"))
+                        )
+                        trans_time = state.last_transition_timestamp if state.last_transition_timestamp is not None else state.last_seen_timestamp
+                        if target_matches and trans_time is not None:
+                            trans_elapsed = abs(timestamp - trans_time)
+                            if trans_elapsed <= 15.0:
+                                is_transition_handoff = True
+
+                    is_currently_active = (active_key in self.active_tracks) and (state.status == IdentityStatus.ACTIVE) and (time_diff < 1.0)
+                    if is_currently_active and not is_transition_handoff:
+                        conflict_evt = JourneyEvent(
+                            event="GLOBAL_ID_CONFLICT",
+                            global_id=global_id,
+                            camera_id=camera_id,
+                            zone=zone,
+                            local_track_id=local_track_id,
+                            timestamp=timestamp,
+                            frame_idx=frame_idx,
+                            details={
+                                "reason": f"Simultaneous/un-transitioned assignment in non-overlapping ROIs: recently present in {active_cam} (Track {active_tid}, elapsed {time_diff:.1f}s)",
+                                "conflict_camera": active_cam,
+                                "conflict_track_id": active_tid
+                            }
+                        )
+                        state.add_event(conflict_evt)
+                        self.store.log_event(conflict_evt)
+                        logging.error(
+                            f"[CONFLICT] {global_id} is currently active or recently present in non-overlapping {active_cam} Track {active_tid}. "
+                            f"Cannot assign to {camera_id} Track {local_track_id} without validated transition handoff!"
+                        )
+                        return False
+                    else:
+                        logging.info(
+                            f"[JOURNEY] Cross-camera handoff: {global_id} transitioned from {active_cam} (Track {active_tid}) to {camera_id} (Track {local_track_id})"
+                        )
+                else:
+                    logging.info(
+                        f"[JOURNEY] Overlapping cross-camera association: {global_id} in {camera_id} (Track {local_track_id}) while also tracked in {active_cam} (Track {active_tid})"
                     )
 
-        is_reacquisition = (state.current_camera != camera_id) or (state.status in [IdentityStatus.TEMPORARILY_LOST, IdentityStatus.REACQUIRABLE])
+        was_same_camera = (state.current_camera == camera_id)
+        is_reacquisition = (not was_same_camera) or (state.status in [
+            IdentityStatus.TEMPORARILY_LOST,
+            IdentityStatus.OCCLUDED,
+            IdentityStatus.REACQUIRABLE,
+            IdentityStatus.DORMANT,
+            IdentityStatus.EXPIRED
+        ])
 
         # Update identity state
         if state.current_camera != camera_id:
@@ -191,11 +269,17 @@ class JourneyManager:
             state.last_transition_timestamp = None
             state.last_transition_target_camera = None
             state.last_transition_target_zone = None
+            state.last_transition_candidate_zones = []
 
-        self._set_active_mapping(camera_id, local_track_id, global_id)
+        self._set_active_mapping(camera_id, local_track_id, global_id, timestamp=timestamp)
 
-        # Log confirmation or reacquisition event
-        evt_type = "GLOBAL_ID_REACQUIRED" if is_reacquisition else "GLOBAL_ID_CONFIRMED"
+        # Log confirmation, track recovery, or cross-camera reacquisition event
+        if is_reacquisition and was_same_camera:
+            evt_type = "TRACK_RECOVERED"
+        elif is_reacquisition:
+            evt_type = "GLOBAL_ID_REACQUIRED"
+        else:
+            evt_type = "GLOBAL_ID_CONFIRMED"
         evt = JourneyEvent(
             event=evt_type,
             global_id=global_id,
@@ -227,7 +311,9 @@ class JourneyManager:
         """
         Updates the last seen timestamp for an active track.
         """
-        gid = self.active_tracks.get((camera_id, local_track_id))
+        key = (camera_id, local_track_id)
+        self.track_last_seen[key] = timestamp
+        gid = self.active_tracks.get(key)
         if gid and gid in self.identities:
             state = self.identities[gid]
             state.last_seen_timestamp = timestamp
@@ -246,6 +332,7 @@ class JourneyManager:
         Transitions the identity to TEMPORARILY_LOST / REACQUIRABLE rather than deleting it.
         """
         key = (camera_id, local_track_id)
+        self.track_last_seen.pop(key, None)
         gid = self.active_tracks.pop(key, None)
         if gid:
             if gid in self.gid_to_camera_tracks and camera_id in self.gid_to_camera_tracks[gid]:
@@ -263,7 +350,7 @@ class JourneyManager:
             if state:
                 has_other_active = bool(gid in self.gid_to_camera_tracks and self.gid_to_camera_tracks[gid])
                 if not has_other_active:
-                    state.status = IdentityStatus.TEMPORARILY_LOST
+                    state.status = IdentityStatus.OCCLUDED
                     state.last_seen_timestamp = timestamp
 
                 evt = JourneyEvent(
@@ -274,7 +361,7 @@ class JourneyManager:
                     local_track_id=local_track_id,
                     timestamp=timestamp,
                     frame_idx=frame_idx,
-                    details={"status": "TEMPORARILY_LOST"}
+                    details={"status": "OCCLUDED"}
                 )
                 state.add_event(evt)
                 self.store.log_event(evt)
@@ -290,6 +377,11 @@ class JourneyManager:
         key = (event.camera_id, event.local_track_id)
         gid = self.active_tracks.get(key) or event.global_id
 
+        cand_dests = getattr(event, "candidate_destinations", None) or getattr(event, "candidate_zones", None) or []
+        if not cand_dests and event.target_camera:
+            cand_dests = [event.target_camera]
+        status = getattr(event, "status", "PENDING")
+
         j_evt = JourneyEvent(
             event="TRANSITION_CROSSED",
             global_id=gid,
@@ -303,7 +395,9 @@ class JourneyManager:
                 "direction": event.direction,
                 "foot_point": [round(event.foot_point[0], 1), round(event.foot_point[1], 1)],
                 "target_camera": event.target_camera,
-                "target_zone": event.target_zone
+                "target_zone": event.target_zone,
+                "candidate_destinations": list(cand_dests),
+                "status": status
             }
         )
 
@@ -315,6 +409,8 @@ class JourneyManager:
             state.last_transition_direction = event.direction
             state.last_transition_target_camera = event.target_camera
             state.last_transition_target_zone = event.target_zone
+            state.last_transition_candidate_zones = list(cand_dests)
+            state.last_transition_status = status
             state.add_event(j_evt)
             self.store.log_event(j_evt)
         else:
@@ -368,12 +464,13 @@ class JourneyManager:
     def check_expirations(self, current_time: float, frame_idx: int):
         """
         Marks TEMPORARILY_LOST tracks as EXPIRED if unseen for longer than timeout.
+        Also expires unresolved stale transitions (> 45s).
         """
         for gid, state in self.identities.items():
-            if state.status == IdentityStatus.TEMPORARILY_LOST:
+            if state.status in [IdentityStatus.OCCLUDED, IdentityStatus.TEMPORARILY_LOST]:
                 elapsed = state.time_since_last_seen(current_time)
                 if elapsed > self.reacquisition_timeout_seconds:
-                    state.status = IdentityStatus.EXPIRED
+                    state.status = IdentityStatus.DORMANT
                     evt = JourneyEvent(
                         event="GLOBAL_ID_EXPIRED",
                         global_id=gid,
@@ -382,12 +479,22 @@ class JourneyManager:
                         local_track_id=state.current_local_track_id or -1,
                         timestamp=current_time,
                         frame_idx=frame_idx,
-                        details={"elapsed_seconds": round(elapsed, 2)}
+                        details={"status": "DORMANT", "elapsed_seconds": round(elapsed, 2)}
                     )
                     state.add_event(evt)
                     self.store.log_event(evt)
 
-    def _set_active_mapping(self, camera_id: str, local_track_id: int, global_id: str):
+            # Check transition expiration
+            if state.last_transition_timestamp is not None:
+                trans_elapsed = current_time - state.last_transition_timestamp
+                if trans_elapsed > 45.0:
+                    state.last_transition_status = "EXPIRED"
+                    state.last_transition_id = None
+                    state.last_transition_candidate_zones = []
+                    state.last_transition_direction = None
+                    state.last_transition_timestamp = None
+
+    def _set_active_mapping(self, camera_id: str, local_track_id: int, global_id: str, timestamp: Optional[float] = None):
         key = (camera_id, local_track_id)
         
         # 1. If this track was previously mapped to an old GID, unmap that old GID for this camera
@@ -403,7 +510,9 @@ class JourneyManager:
             if old_tid != local_track_id:
                 self.active_tracks.pop((camera_id, old_tid), None)
             
-        # 3. Store mapping independently per camera; do not unmap other cameras!
+        # 3. Store mapping independently per camera
+        if timestamp is not None:
+            self.track_last_seen[key] = timestamp
         self.active_tracks[key] = global_id
         if global_id not in self.gid_to_camera_tracks:
             self.gid_to_camera_tracks[global_id] = {}

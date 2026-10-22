@@ -21,6 +21,7 @@ from app.association.temporal_gate import TemporalGate
 from app.association.spatial_gate import SpatialGate
 from app.association.candidate_filter import CandidateFilter
 from app.association.association_manager import AssociationManager
+from app.utils.path_resolver import resolve_video_path, resolve_output_path
 
 def setup_logging(config):
     os.makedirs("logs", exist_ok=True)
@@ -79,6 +80,20 @@ def main():
     logging.info("Loading Pose Extractor...")
     pose_extractor = PoseExtractor(model_path=config.get("pose_model_path", "models/yolo11n-pose.pt"), device="cpu")
     
+    person_masker = None
+    masking_cfg = config.get("reid_masking", {})
+    if masking_cfg.get("enabled", False):
+        logging.info("Loading Person Masker for ReID background suppression...")
+        from app.reid.masker import PersonMasker
+        person_masker = PersonMasker(
+            model_path=masking_cfg.get("model_path", "models/yolo11n-seg.pt"),
+            enabled=bool(masking_cfg.get("enabled", True)),
+            imgsz=int(masking_cfg.get("imgsz", 160)),
+            bg_fill=tuple(masking_cfg.get("bg_fill", [128, 128, 128])),
+            mask_reuse_frames=int(masking_cfg.get("mask_reuse_frames", 6)),
+            device="cpu"
+        )
+    
     attire_extractor = None
     if config.get("attire_detection_enabled", False):
         logging.info("Loading Formal Attire Extractor...")
@@ -126,7 +141,9 @@ def main():
     journey_manager = JourneyManager(
         store=store,
         reacquisition_timeout_seconds=config.get("temporal_constraints", {}).get("same_camera_reacquisition_max_seconds", 20.0),
-        transition_rules=config.get("transition_rules")
+        transition_rules=config.get("transition_rules"),
+        topology=config.get("topology"),
+        overlapping_camera_pairs=config.get("temporal_constraints", {}).get("overlapping_camera_pairs")
     )
     topology_gate = TopologyGate(
         topology_config=config.get("topology"),
@@ -159,17 +176,18 @@ def main():
         for cam_id, cam_item in config["cameras"].items():
             cameras_info.append({
                 "camera_id": cam_id,
-                "video_path": cam_item.get("video_path", "")
+                "video_path": resolve_video_path(cam_item.get("video_path", ""))
             })
     else:
         cameras_info = [
-            {"camera_id": "cctv1", "video_path": config.get("cctv1_video", "")},
-            {"camera_id": "cctv2", "video_path": config.get("cctv2_video", "")}
+            {"camera_id": "cctv1", "video_path": resolve_video_path(config.get("cctv1_video", ""))},
+            {"camera_id": "cctv2", "video_path": resolve_video_path(config.get("cctv2_video", ""))}
         ]
     
+    output_path = resolve_output_path(config.get("combined_output", "D:/output/combined_output.mp4"))
     processor = MultiCameraProcessor(
         cameras_info=cameras_info,
-        output_path=config.get("combined_output", "output/combined_output.mp4"),
+        output_path=output_path,
         config=config,
         extractor=extractor,
         par_extractor=par_extractor,
@@ -179,7 +197,8 @@ def main():
         matcher=matcher,
         association_manager=association_manager,
         journey_manager=journey_manager,
-        store=store
+        store=store,
+        person_masker=person_masker
     )
     
     try:

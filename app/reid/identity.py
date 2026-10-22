@@ -170,6 +170,21 @@ class GlobalIdentity:
                 self.par_profile["features"] = (curr * n + feat_arr) / (n + 1)
             self.par_profile["par_count"] += 1
 
+    def remove_track_embeddings(self, camera_id: str, track_id: int) -> int:
+        """
+        Removes any provisional or mistaken embeddings associated with (camera_id, track_id)
+        from this identity's view banks and tracks history.
+        """
+        removed = 0
+        for vp, bank in self.reid_bank.items():
+            new_bank = [e for e in bank if not (e.get("camera_id") == camera_id and e.get("track_id") == track_id)]
+            removed += len(bank) - len(new_bank)
+            self.reid_bank[vp] = new_bank
+
+        self.tracks = [t for t in self.tracks if not (t.get("camera_id") == camera_id and t.get("track_id") == track_id)]
+        self.cameras_seen = {t["camera_id"] for t in self.tracks if "camera_id" in t}
+        return removed
+
     def get_all_embeddings(self) -> List[Dict[str, Any]]:
         """Returns all embeddings across all viewpoints (Phase 3)."""
         embs = []

@@ -45,7 +45,7 @@ class RoiDetector:
         for roi_id, cfg in roi_config.items():
             if not cfg.get("enabled", True):
                 continue
-            pts = cfg.get("points", [])
+            pts = cfg.get("points", cfg.get("polygon", []))
             if len(pts) >= 3:
                 self.polygons[roi_id] = np.array(pts, dtype=np.int32).reshape((-1, 1, 2))
 

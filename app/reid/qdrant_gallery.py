@@ -294,6 +294,35 @@ class QdrantGallery:
         except Exception as e:
             print(f"Qdrant background upload error: {e}")
 
+    def rollback_track(self, gid: str, camera_id: str, track_id: int) -> int:
+        """
+        Rolls back provisional or mistakenly committed embeddings for a track on a GID in Qdrant.
+        """
+        with self.lock:
+            ident = self.identities.get(gid)
+            if not ident:
+                return 0
+            old_embs = ident.get("embeddings", [])
+            new_embs = []
+            removed = 0
+            for e in old_embs:
+                meta = e.get("metadata", {}) if isinstance(e, dict) else {}
+                c_id = meta.get("camera_id") or (e.get("camera_id") if isinstance(e, dict) else None)
+                t_id = meta.get("track_id") or (e.get("track_id") if isinstance(e, dict) else None)
+                if c_id == camera_id and t_id == track_id:
+                    removed += 1
+                else:
+                    new_embs.append(e)
+            ident["embeddings"] = new_embs
+            ident["tracks"] = [
+                t for t in ident.get("tracks", [])
+                if not (t.get("camera_id") == camera_id and t.get("track_id") == track_id)
+            ]
+            ident["cameras_seen"] = {t["camera_id"] for t in ident["tracks"] if "camera_id" in t}
+            self._upload_to_qdrant(gid)
+            self._save_local_identities()
+            return removed
+
     def get_identities(self):
         with self.lock:
             return dict(self.identities)

@@ -1,11 +1,12 @@
 from ultralytics import YOLO
 import cv2
+from app.utils.path_resolver import resolve_video_path
 
 # Path to your sink detection model
 MODEL_PATH = "models/yolo11n(best).pt"
 
 # Image/video to test
-SOURCE = "cctv_samples/handwash-sink-detection.png"   # Change this to your image/video path
+SOURCE = resolve_video_path("cctv_samples/handwash-sink-detection.png")   # Change this to your image/video path
 
 # Load model
 model = YOLO(MODEL_PATH)
