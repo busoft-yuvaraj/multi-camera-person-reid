@@ -6,7 +6,7 @@ cameras:
   waiting_lobby:
     camera_id: "waiting_lobby"
     zone: "waiting_lobby"
-    video_path: "D:/cctv_samples/waiting_lobby.mp4"
+    video_path: "D:/cctv_samples/test_9/lobby.mp4"
     roi:
       monitored:
         enabled: true
@@ -35,7 +35,7 @@ cameras:
   pantry:
     camera_id: "pantry"
     zone: "pantry"
-    video_path: "D:/cctv_samples/pantry.mp4"
+    video_path: "D:/cctv_samples/test_9/pantry.mp4"
     crop: [0, 0, 720, 720]
     roi:
       sink:
@@ -85,7 +85,7 @@ cameras:
   passage:
     camera_id: "passage"
     zone: "passage"
-    video_path: "D:/cctv_samples/passage1.mp4"
+    video_path: "D:/cctv_samples/test_9/passage.mp4"
     roi:
       monitored:
         enabled: true
@@ -183,10 +183,7 @@ transition_rules:
 # ============================================================
 
 temporal_constraints:
-  overlapping_camera_pairs:
-    - ["pantry", "waiting_lobby"]
-    - ["pantry", "passage"]
-    - ["waiting_lobby", "passage"]
+  overlapping_camera_pairs: []
   pantry_to_waiting_lobby:
     min_seconds: 0.5
     max_seconds: 45.0
