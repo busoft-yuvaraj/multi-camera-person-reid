@@ -9,52 +9,52 @@ An enterprise multi-camera CCTV tracking and person re-identification (Re-ID) sy
 ```mermaid
 flowchart TD
     subgraph Capture["1. Synchronized Multi-Camera Capture"]
-        C1[Camera 1: Waiting Lobby] --> Det1[YOLOv11 Detection + BoT-SORT Tracking]
-        C2[Camera 2: Pantry] --> Det2[YOLOv11 Detection + BoT-SORT Tracking]
-        C3[Camera 3: Passage] --> Det3[YOLOv11 Detection + BoT-SORT Tracking]
+        C1["Camera 1: Waiting Lobby"] --> Det1["YOLOv11 Detection + BoT-SORT Tracking"]
+        C2["Camera 2: Pantry"] --> Det2["YOLOv11 Detection + BoT-SORT Tracking"]
+        C3["Camera 3: Passage"] --> Det3["YOLOv11 Detection + BoT-SORT Tracking"]
     end
 
     subgraph Feature["2. Feature Extraction & Embedding Bank"]
-        Det1 & Det2 & Det3 --> Quality[Quality & Blur Filter]
-        Quality --> OSNet[OSNet 512-D Appearance Extraction]
-        OSNet --> Bank[Temporal Diversity Embedding Bank (15 vectors/track)]
+        Det1 & Det2 & Det3 --> Quality["Quality & Blur Filter"]
+        Quality --> OSNet["OSNet 512-D Appearance Extraction"]
+        OSNet --> Bank["Temporal Diversity Embedding Bank (15 vectors/track)"]
     end
 
     subgraph SpatialEvents["3. Floor-Plan Spatial Event Detection"]
-        Det1 & Det2 & Det3 --> TransDet[Line Crossing Transition Detector]
-        Det1 & Det2 & Det3 --> RoiDet[Polygon ROI / Zone Detector]
-        TransDet --> JourneyMgr[Journey Manager]
+        Det1 & Det2 & Det3 --> TransDet["Line Crossing Transition Detector"]
+        Det1 & Det2 & Det3 --> RoiDet["Polygon ROI / Zone Detector"]
+        TransDet --> JourneyMgr["Journey Manager"]
         RoiDet --> JourneyMgr
     end
 
     subgraph Association["4. Two-Stage Global ID Association"]
-        Bank --> CandFilter[Stage 1: Candidate Filter Engine]
-        JourneyMgr -.->|Live Identity States| CandFilter
+        Bank --> CandFilter["Stage 1: Candidate Filter Engine"]
+        JourneyMgr -.->|"Live Identity States"| CandFilter
         
         subgraph Stage1["Stage 1: Physical Gates"]
-            CandFilter --> Gate1[Topology Gate: Physical Connectivity]
-            Gate1 --> Gate2[Temporal Gate: Transit Time Bounds]
-            Gate2 --> Gate3[Spatial Gate: Transition Line Crossings]
+            CandFilter --> Gate1["Topology Gate: Physical Connectivity"]
+            Gate1 --> Gate2["Temporal Gate: Transit Time Bounds"]
+            Gate2 --> Gate3["Spatial Gate: Transition Line Crossings"]
         end
         
-        Gate3 --> ValidPool[Filtered Pool: 1-2 Valid Candidates]
+        Gate3 --> ValidPool["Filtered Pool: 1-2 Valid Candidates"]
         
         subgraph Stage2["Stage 2: Identity Verification"]
-            ValidPool --> Qdrant[Candidate-Restricted Qdrant Vector Search]
-            Qdrant --> ReIDScore[Pure OSNet Cosine Similarity Scoring]
-            ReIDScore --> DecisionTree{Score Thresholds}
+            ValidPool --> Qdrant["Candidate-Restricted Qdrant Vector Search"]
+            Qdrant --> ReIDScore["Pure OSNet Cosine Similarity Scoring"]
+            ReIDScore --> DecisionTree{"Score Thresholds"}
         end
     end
 
     subgraph Decision["5. Decision & Lifecycle"]
-        DecisionTree -->|Score >= 0.70| Confirmed[CONFIRMED: Assigned Global ID]
-        DecisionTree -->|0.55 <= Score < 0.70| Pending[PENDING: Multi-Frame Evidence Accumulator]
-        Pending -->|Sustained 3 frames| Confirmed
-        DecisionTree -->|< 0.55 or Empty Candidates| NoMatch[No Match Counter]
-        NoMatch -->|>= 15 Frames Timeout| NewID[Register New Global ID in Qdrant & Gallery]
+        DecisionTree -->|"Score >= 0.70"| Confirmed["CONFIRMED: Assigned Global ID"]
+        DecisionTree -->|"0.55 <= Score < 0.70"| Pending["PENDING: Multi-Frame Evidence Accumulator"]
+        Pending -->|"Sustained 3 frames"| Confirmed
+        DecisionTree -->|"< 0.55 or Empty Candidates"| NoMatch["No Match Counter"]
+        NoMatch -->|">= 15 Frames Timeout"| NewID["Register New Global ID in Qdrant & Gallery"]
     end
 
-    Confirmed --> Audit[Audit Trail: logs/journey.jsonl & logs/association_decisions.jsonl]
+    Confirmed --> Audit["Audit Trail: logs/journey.jsonl & logs/association_decisions.jsonl"]
     NewID --> Audit
 ```
 
@@ -97,8 +97,8 @@ Once the candidate set is filtered:
 
 ### 6. Journey Store & Audit Trail
 Every state transition is written in real time to append-only JSONL files:
-- **[`logs/journey.jsonl`](file:///logs/journey.jsonl):** Logs lifecycle events: `TRACK_STARTED`, `TRANSITION_CROSSED`, `ZONE_ENTER`, `ZONE_EXIT`, `TRACK_LOST`.
-- **[`logs/association_decisions.jsonl`](file:///logs/association_decisions.jsonl):** Comprehensive audit trail containing frame index, candidate evaluations, rejection reasons (`EXCLUDED_OCCUPIED_IN_CAMERA`, `TOPOLOGY_REJECT`, etc.), similarity scores, and final association verdicts.
+- **`logs/journey.jsonl`:** Logs lifecycle events: `TRACK_STARTED`, `TRANSITION_CROSSED`, `ZONE_ENTER`, `ZONE_EXIT`, `TRACK_LOST`.
+- **`logs/association_decisions.jsonl`:** Comprehensive audit trail containing frame index, candidate evaluations, rejection reasons (`EXCLUDED_OCCUPIED_IN_CAMERA`, `TOPOLOGY_REJECT`, etc.), similarity scores, and final association verdicts.
 
 ---
 
