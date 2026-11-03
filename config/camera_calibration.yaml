@@ -1,0 +1,359 @@
+# ==============================================================================
+# PHYSICAL CAMERA CALIBRATION & GROUND-PLANE CONFIGURATION
+# 3rd Floor Corporate Suite: Passage 1, Pantry, Waiting Lobby
+# ==============================================================================
+
+version: "1.0"
+description: "Predefined backend ground-plane definitions, homography correspondences, and global topology"
+
+# ------------------------------------------------------------------------------
+# COMMON BUILDING COORDINATE SYSTEM
+# ------------------------------------------------------------------------------
+common_building_frame:
+  coordinate_convention: "East-North Cartesian grid (X = Eastward along corridor, Y = Northward into rooms)"
+  units: "relative_units"
+  scale_to_meters: 0.15   # 100 relative units ~ 15.0 meters
+  bounds:
+    x_min: 0.0
+    x_max: 160.0
+    y_min: 0.0
+    y_max: 120.0
+  
+  topology:
+    passage_to_pantry:
+      type: "overlap"
+      description: "Direct visual overlap at Pantry South doorway (Yellow Handoff Zone)"
+      min_transit_seconds: 0.0
+      max_transit_seconds: 3.5
+      expected_distance_units: 5.0
+    
+    pantry_to_passage:
+      type: "overlap"
+      description: "Direct visual overlap at Pantry South doorway (Yellow Handoff Zone)"
+      min_transit_seconds: 0.0
+      max_transit_seconds: 3.5
+      expected_distance_units: 5.0
+
+    passage_to_lobby:
+      type: "adjacent_straight"
+      description: "Passage 1 corridor continues straight into Waiting Lobby entrance"
+      min_transit_seconds: 0.5
+      max_transit_seconds: 4.0
+      expected_distance_units: 12.0
+
+    lobby_to_passage:
+      type: "adjacent_straight"
+      description: "Waiting Lobby entrance connects straight into Passage 1 corridor"
+      min_transit_seconds: 0.5
+      max_transit_seconds: 4.0
+      expected_distance_units: 12.0
+
+    pantry_to_lobby:
+      type: "adjacent_vestibule"
+      description: "Connecting corridor/vestibule from Pantry East door to Lobby West side"
+      min_transit_seconds: 1.5
+      max_transit_seconds: 6.0
+      expected_distance_units: 18.0
+
+    lobby_to_pantry:
+      type: "adjacent_vestibule"
+      description: "Connecting corridor/vestibule from Lobby West side to Pantry East door"
+      min_transit_seconds: 1.5
+      max_transit_seconds: 6.0
+      expected_distance_units: 18.0
+
+# ------------------------------------------------------------------------------
+# CAMERA CONFIGURATIONS
+# ------------------------------------------------------------------------------
+cameras:
+
+  # ----------------------------------------------------------------------------
+  # CAMERA A: PASSAGE 1
+  # ----------------------------------------------------------------------------
+  passage1:
+    camera_id: "passage1"
+    zone: "passage"
+    floor_plan_image: "assets/floor_plans/passage1_ground_plan.png"
+    coverage_map_reference: "assets/floor_plans/camera_coverage_map.png"
+    image_resolution: [1280, 720]
+    camera_orientation: "Facing East down central corridor towards Waiting Lobby / Pantry"
+    
+    # Local coordinate convention:
+    # X = Along passage (0 at far pantry threshold, L at near camera side)
+    # Y = Across passage (0 at left wall, W at right wall)
+    coordinate_convention:
+      x_axis: "Along passage (Far -> Camera)"
+      y_axis: "Across passage (Left -> Right)"
+      length_L: 100.0
+      width_W: 20.0
+      units: "relative_units"
+
+    # Calibration Landmarks (P1 - P6 from supplied ground plan)
+    landmarks:
+      - id: "P1"
+        name: "Far Left (passage entry end / pantry threshold)"
+        image_point: [575.0, 485.0]
+        ground_point: [0.0, 0.0]
+      
+      - id: "P2"
+        name: "Far Right (passage entry end / pantry threshold)"
+        image_point: [740.0, 485.0]
+        ground_point: [0.0, 20.0]
+
+      - id: "P3"
+        name: "Mid Left (along passage / Cabin 3F door jamb)"
+        image_point: [510.3, 580.9]
+        ground_point: [50.0, 0.0]
+
+      - id: "P4"
+        name: "Mid Right (along passage / service door jamb)"
+        image_point: [693.2, 580.9]
+        ground_point: [50.0, 20.0]
+
+      - id: "P5"
+        name: "Near Left (camera side / Cabin 3G base)"
+        image_point: [430.0, 700.0]
+        ground_point: [100.0, 0.0]
+
+      - id: "P6"
+        name: "Near Right (camera side / fire exit partition)"
+        image_point: [635.0, 700.0]
+        ground_point: [100.0, 20.0]
+
+    # Walkable Corridor Polygon
+    walkable_regions:
+      - id: "corridor_carpet"
+        name: "Walkable Carpet Floor"
+        surface_type: "carpet"
+        polygon:
+          - [-3.0, -2.0]
+          - [103.0, -2.0]
+          - [103.0, 22.0]
+          - [-3.0, 22.0]
+
+    # Non-walkable obstacles
+    obstacles: []
+
+    # Local Ground Plane Boundaries
+    boundaries:
+      x_min: -5.0
+      x_max: 105.0
+      y_min: -5.0
+      y_max: 25.0
+
+    # Transformation to Common Building Coordinates:
+    # Corridor junction with Pantry and Lobby at X=80, Y=50
+    global_transform:
+      translation: [80.0, 40.0]
+      rotation_deg: 0.0
+      scale: 1.0
+
+  # ----------------------------------------------------------------------------
+  # CAMERA B: PANTRY
+  # ----------------------------------------------------------------------------
+  pantry:
+    camera_id: "pantry"
+    zone: "pantry"
+    floor_plan_image: "assets/floor_plans/pantry_ground_plan.jpg"
+    coverage_map_reference: "assets/floor_plans/camera_coverage_map.png"
+    image_resolution: [1280, 720]
+    camera_orientation: "Corner mount facing North across dining area and kitchenette"
+
+    # Local coordinate convention:
+    # Origin (0, 0) at Rear-Left (Kitchen Counter corner)
+    # X = Left -> Right (0 to 100)
+    # Y = Rear -> Camera/Front (0 to 100)
+    coordinate_convention:
+      x_axis: "Left -> Right (Kitchen -> Meeting Wall)"
+      y_axis: "Rear -> Front (Conference -> Passage threshold)"
+      units: "relative_units"
+
+    # Candidate Calibration Landmarks (P1 - P6 from supplied ground plan)
+    landmarks:
+      - id: "P1"
+        name: "Rear-Left floor reference near kitchen counter"
+        image_point: [331.3, 368.9]
+        ground_point: [15.0, 15.0]
+
+      - id: "P2"
+        name: "Rear doorway threshold (rear glass partition)"
+        image_point: [677.8, 354.9]
+        ground_point: [70.0, 15.0]
+
+      - id: "P3"
+        name: "Tile grout intersection between table and planter"
+        image_point: [611.4, 451.6]
+        ground_point: [60.0, 50.0]
+
+      - id: "P4"
+        name: "Floor material boundary (wood parquet to tile)"
+        image_point: [494.7, 533.2]
+        ground_point: [45.0, 75.0]
+
+      - id: "P5"
+        name: "Tile-carpet boundary (Passage 1 doorway threshold)"
+        image_point: [837.3, 592.7]
+        ground_point: [85.0, 90.0]
+
+      - id: "P6"
+        name: "Planter base edge (large circular planter C1)"
+        image_point: [689.7, 481.7]
+        ground_point: [70.0, 60.0]
+
+    # Walkable regions by surface type
+    walkable_regions:
+      - id: "tile_floor"
+        name: "Main Ceramic Tile Floor"
+        surface_type: "tile"
+        polygon:
+          - [15.0, 10.0]
+          - [95.0, 10.0]
+          - [95.0, 85.0]
+          - [50.0, 85.0]
+          - [50.0, 30.0]
+          - [15.0, 30.0]
+
+      - id: "wood_floor"
+        name: "Wood-Look Parquet Floor under Dining Table"
+        surface_type: "wood"
+        polygon:
+          - [15.0, 30.0]
+          - [50.0, 30.0]
+          - [50.0, 85.0]
+          - [15.0, 85.0]
+
+      - id: "carpet_mat"
+        name: "Entrance Carpet Mat leading into Passage 1"
+        surface_type: "carpet"
+        polygon:
+          - [50.0, 85.0]
+          - [95.0, 85.0]
+          - [95.0, 100.0]
+          - [50.0, 100.0]
+
+    # Obstacles (Non-walkable furniture and planters)
+    obstacles:
+      - id: "counter_cabinetry"
+        name: "Kitchen Counter / Cabinetry along West wall"
+        type: "polygon"
+        polygon:
+          - [0.0, 0.0]
+          - [15.0, 0.0]
+          - [15.0, 80.0]
+          - [0.0, 80.0]
+
+      - id: "dining_table_chairs"
+        name: "High Dining Table & Stool Footprint"
+        type: "polygon"
+        polygon:
+          - [20.0, 35.0]
+          - [45.0, 35.0]
+          - [45.0, 75.0]
+          - [20.0, 75.0]
+
+      - id: "planter_c1"
+        name: "Large Circular Planter (Pantry Center-Right)"
+        type: "circle"
+        center: [70.0, 50.0]
+        radius: 10.0
+
+      - id: "planter_c2"
+        name: "Tripod Potted Plant (Pantry East Entrance)"
+        type: "circle"
+        center: [90.0, 75.0]
+        radius: 5.0
+
+      - id: "planter_c3"
+        name: "Decorative Ceramic Pot (Pantry Rear Wall)"
+        type: "circle"
+        center: [80.0, 12.0]
+        radius: 4.0
+
+    # Local Ground Plane Boundaries
+    boundaries:
+      x_min: 0.0
+      x_max: 100.0
+      y_min: 0.0
+      y_max: 105.0
+
+    # Transformation to Common Building Coordinates:
+    # Pantry South doorway opens to corridor junction at X=80, Y=50
+    global_transform:
+      translation: [-5.0, -40.0]
+      rotation_deg: 0.0
+      scale: 1.0
+
+  # ----------------------------------------------------------------------------
+  # CAMERA C: WAITING LOBBY
+  # ----------------------------------------------------------------------------
+  waiting_lobby:
+    camera_id: "waiting_lobby"
+    zone: "waiting_lobby"
+    floor_plan_image: "assets/floor_plans/waiting_lobby_ground_plan.jpg"
+    coverage_map_reference: "assets/floor_plans/camera_coverage_map.png"
+    image_resolution: [1280, 720]
+    camera_orientation: "High elevated mount facing North toward elevator bank"
+
+    # Local coordinate convention:
+    # Origin (0, 0) at P1 (Rear Left floor corner)
+    # X = Left -> Right (0 to 100)
+    # Y = Rear (Doors) -> Front (Camera) (0 to 100)
+    coordinate_convention:
+      x_axis: "Left -> Right (Partition -> Glass Booth)"
+      y_axis: "Rear -> Front (Elevators -> Foreground)"
+      units: "relative_units"
+
+    # Calibration Landmarks (P1 - P4 from supplied ground plan)
+    landmarks:
+      - id: "P1"
+        name: "Rear Left (floor corner near entrance doors / planter)"
+        image_point: [425, 290]
+        ground_point: [0.0, 0.0]
+
+      - id: "P2"
+        name: "Rear Right (floor corner near elevator doors)"
+        image_point: [765, 270]
+        ground_point: [100.0, 0.0]
+
+      - id: "P3"
+        name: "Front Left (floor corner near frosted glass partition)"
+        image_point: [315, 680]
+        ground_point: [0.0, 100.0]
+
+      - id: "P4"
+        name: "Front Right (floor corner near curved meeting booth)"
+        image_point: [845, 690]
+        ground_point: [100.0, 100.0]
+
+    # Walkable Floor Polygon
+    walkable_regions:
+      - id: "lobby_walkable_quad"
+        name: "Walkable Ceramic Tile Corridor"
+        surface_type: "tile"
+        polygon:
+          - [0.0, 0.0]
+          - [100.0, 0.0]
+          - [100.0, 100.0]
+          - [0.0, 100.0]
+
+    # Non-walkable obstacles
+    obstacles:
+      - id: "planter_c1"
+        name: "Circular Planter (Waiting Lobby Left)"
+        type: "circle"
+        center: [32.0, 42.0]
+        radius: 12.0
+
+    # Local Ground Plane Boundaries
+    boundaries:
+      x_min: -5.0
+      x_max: 105.0
+      y_min: -5.0
+      y_max: 105.0
+
+    # Transformation to Common Building Coordinates:
+    # Lobby entrance connects to corridor junction at X=80, Y=50
+    global_transform:
+      translation: [30.0, -50.0]
+      rotation_deg: 0.0
+      scale: 1.0

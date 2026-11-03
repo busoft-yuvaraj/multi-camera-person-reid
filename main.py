@@ -5,10 +5,12 @@ import sys
 from datetime import datetime
 from dotenv import load_dotenv
 
+import cv2
+import torch
+
 from app.reid.extractor import OSNetExtractor
 from app.reid.extractors.par_extractor import ParExtractor
 from app.reid.extractors.pose_extractor import PoseExtractor
-from app.reid.extractors.attire_extractor import AttireExtractor
 from app.reid.global_gallery import GlobalGallery
 from app.reid.qdrant_gallery import QdrantGallery
 from app.reid.matcher import GlobalMatcher
@@ -71,6 +73,12 @@ def main():
         config["qdrant_collection"] = qdrant_collection
 
     setup_logging(config)
+
+    # Optimize CPU execution to eliminate thread contention between PyTorch and OpenCV
+    cpu_threads = min(4, os.cpu_count() or 4)
+    torch.set_num_threads(cpu_threads)
+    cv2.setNumThreads(1)
+    logging.info(f"Configured CPU execution: PyTorch threads={cpu_threads}, OpenCV threads=1")
         
     logging.info("Loading OSNet Feature Extractor...")
     extractor = OSNetExtractor(model_name=config["reid_model_path"], device="cpu")
@@ -80,15 +88,6 @@ def main():
     
     logging.info("Loading Pose Extractor...")
     pose_extractor = PoseExtractor(model_path=config.get("pose_model_path", "models/yolo11n-pose.pt"), device="cpu")
-    
-    attire_extractor = None
-    if config.get("attire_detection_enabled", False):
-        logging.info("Loading Formal Attire Extractor...")
-        attire_extractor = AttireExtractor(
-            model_path=config.get("attire_model_path", "models/formal_attire_best.pt"),
-            conf=config.get("attire_conf_threshold", 0.25),
-            device="cpu"
-        )
     
     gallery = None
     if config.get("qdrant_url"):
@@ -176,7 +175,6 @@ def main():
         extractor=extractor,
         par_extractor=par_extractor,
         pose_extractor=pose_extractor,
-        attire_extractor=attire_extractor,
         gallery=gallery,
         matcher=matcher,
         association_manager=association_manager,

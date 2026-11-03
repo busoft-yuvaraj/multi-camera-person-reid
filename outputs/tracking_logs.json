@@ -1,0 +1,1780 @@
+{
+  "camera_id": "passage1",
+  "video_file": "passage1.mp4",
+  "total_frames_processed": 60,
+  "processing_fps": 7.22,
+  "total_observations": 52,
+  "unique_tracks": [
+    1
+  ],
+  "observations": [
+    {
+      "camera_id": "passage1",
+      "frame_number": 0,
+      "timestamp": 0.0,
+      "timestamp_str": "00:00:00.000",
+      "track_id": 1,
+      "confidence": 0.433,
+      "bounding_box": [
+        702.3,
+        376.9,
+        744.0,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.1,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.15,
+          17.94
+        ],
+        "global_building": [
+          79.85,
+          57.94
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 1,
+      "timestamp": 0.042,
+      "timestamp_str": "00:00:00.041",
+      "track_id": 1,
+      "confidence": 0.428,
+      "bounding_box": [
+        702.4,
+        377.3,
+        744.0,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.2,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.12,
+          17.95
+        ],
+        "global_building": [
+          79.88,
+          57.95
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 2,
+      "timestamp": 0.084,
+      "timestamp_str": "00:00:00.083",
+      "track_id": 1,
+      "confidence": 0.417,
+      "bounding_box": [
+        702.5,
+        377.2,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.3,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.14,
+          17.96
+        ],
+        "global_building": [
+          79.86,
+          57.96
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 3,
+      "timestamp": 0.125,
+      "timestamp_str": "00:00:00.125",
+      "track_id": 1,
+      "confidence": 0.417,
+      "bounding_box": [
+        702.6,
+        377.3,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.4,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.13,
+          17.97
+        ],
+        "global_building": [
+          79.87,
+          57.97
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 4,
+      "timestamp": 0.167,
+      "timestamp_str": "00:00:00.167",
+      "track_id": 1,
+      "confidence": 0.422,
+      "bounding_box": [
+        702.7,
+        377.4,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.4,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.14,
+          17.97
+        ],
+        "global_building": [
+          79.86,
+          57.97
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 5,
+      "timestamp": 0.209,
+      "timestamp_str": "00:00:00.209",
+      "track_id": 1,
+      "confidence": 0.436,
+      "bounding_box": [
+        702.9,
+        377.8,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.5,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.14,
+          17.98
+        ],
+        "global_building": [
+          79.86,
+          57.98
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 6,
+      "timestamp": 0.251,
+      "timestamp_str": "00:00:00.250",
+      "track_id": 1,
+      "confidence": 0.439,
+      "bounding_box": [
+        703.0,
+        378.0,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.6,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.12,
+          17.99
+        ],
+        "global_building": [
+          79.88,
+          57.99
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 7,
+      "timestamp": 0.293,
+      "timestamp_str": "00:00:00.292",
+      "track_id": 1,
+      "confidence": 0.451,
+      "bounding_box": [
+        703.0,
+        377.8,
+        744.2,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.6,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.1,
+          18.0
+        ],
+        "global_building": [
+          79.9,
+          58.0
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 8,
+      "timestamp": 0.335,
+      "timestamp_str": "00:00:00.334",
+      "track_id": 1,
+      "confidence": 0.433,
+      "bounding_box": [
+        703.1,
+        377.8,
+        744.2,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.6,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.11,
+          18.0
+        ],
+        "global_building": [
+          79.89,
+          58.0
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 9,
+      "timestamp": 0.376,
+      "timestamp_str": "00:00:00.376",
+      "track_id": 1,
+      "confidence": 0.444,
+      "bounding_box": [
+        703.2,
+        377.8,
+        744.2,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.11,
+          18.01
+        ],
+        "global_building": [
+          79.89,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 10,
+      "timestamp": 0.418,
+      "timestamp_str": "00:00:00.418",
+      "track_id": 1,
+      "confidence": 0.445,
+      "bounding_box": [
+        703.3,
+        378.0,
+        744.2,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.11,
+          18.01
+        ],
+        "global_building": [
+          79.89,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 11,
+      "timestamp": 0.46,
+      "timestamp_str": "00:00:00.460",
+      "track_id": 1,
+      "confidence": 0.44,
+      "bounding_box": [
+        703.3,
+        378.0,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.11,
+          18.01
+        ],
+        "global_building": [
+          79.89,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 12,
+      "timestamp": 0.502,
+      "timestamp_str": "00:00:00.501",
+      "track_id": 1,
+      "confidence": 0.437,
+      "bounding_box": [
+        703.0,
+        377.7,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.5,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.1,
+          17.99
+        ],
+        "global_building": [
+          79.9,
+          57.99
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 13,
+      "timestamp": 0.544,
+      "timestamp_str": "00:00:00.543",
+      "track_id": 1,
+      "confidence": 0.444,
+      "bounding_box": [
+        703.1,
+        377.7,
+        744.0,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.5,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.1,
+          17.99
+        ],
+        "global_building": [
+          79.9,
+          57.99
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 14,
+      "timestamp": 0.586,
+      "timestamp_str": "00:00:00.585",
+      "track_id": 1,
+      "confidence": 0.439,
+      "bounding_box": [
+        703.0,
+        377.8,
+        744.0,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.5,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.1,
+          17.99
+        ],
+        "global_building": [
+          79.9,
+          57.99
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 15,
+      "timestamp": 0.627,
+      "timestamp_str": "00:00:00.627",
+      "track_id": 1,
+      "confidence": 0.441,
+      "bounding_box": [
+        703.1,
+        377.9,
+        744.0,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.6,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.12,
+          17.99
+        ],
+        "global_building": [
+          79.88,
+          57.99
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 16,
+      "timestamp": 0.669,
+      "timestamp_str": "00:00:00.669",
+      "track_id": 1,
+      "confidence": 0.425,
+      "bounding_box": [
+        703.3,
+        378.0,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.14,
+          18.0
+        ],
+        "global_building": [
+          79.86,
+          58.0
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 17,
+      "timestamp": 0.711,
+      "timestamp_str": "00:00:00.711",
+      "track_id": 1,
+      "confidence": 0.445,
+      "bounding_box": [
+        703.4,
+        378.0,
+        744.1,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.15,
+          18.01
+        ],
+        "global_building": [
+          79.85,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 18,
+      "timestamp": 0.753,
+      "timestamp_str": "00:00:00.752",
+      "track_id": 1,
+      "confidence": 0.427,
+      "bounding_box": [
+        703.4,
+        378.1,
+        744.1,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.16,
+          18.02
+        ],
+        "global_building": [
+          79.84,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 19,
+      "timestamp": 0.795,
+      "timestamp_str": "00:00:00.794",
+      "track_id": 1,
+      "confidence": 0.438,
+      "bounding_box": [
+        703.4,
+        378.0,
+        744.1,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.01
+        ],
+        "global_building": [
+          79.83,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 20,
+      "timestamp": 0.837,
+      "timestamp_str": "00:00:00.836",
+      "track_id": 1,
+      "confidence": 0.437,
+      "bounding_box": [
+        703.4,
+        377.8,
+        744.2,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.02
+        ],
+        "global_building": [
+          79.83,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 21,
+      "timestamp": 0.878,
+      "timestamp_str": "00:00:00.878",
+      "track_id": 1,
+      "confidence": 0.447,
+      "bounding_box": [
+        703.4,
+        377.5,
+        744.2,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.18,
+          18.01
+        ],
+        "global_building": [
+          79.82,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 22,
+      "timestamp": 0.92,
+      "timestamp_str": "00:00:00.920",
+      "track_id": 1,
+      "confidence": 0.443,
+      "bounding_box": [
+        703.4,
+        377.5,
+        744.2,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.18,
+          18.01
+        ],
+        "global_building": [
+          79.82,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 23,
+      "timestamp": 0.962,
+      "timestamp_str": "00:00:00.962",
+      "track_id": 1,
+      "confidence": 0.428,
+      "bounding_box": [
+        703.5,
+        377.7,
+        744.1,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.01
+        ],
+        "global_building": [
+          79.83,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 24,
+      "timestamp": 1.004,
+      "timestamp_str": "00:00:01.003",
+      "track_id": 1,
+      "confidence": 0.438,
+      "bounding_box": [
+        703.5,
+        377.8,
+        744.1,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.01
+        ],
+        "global_building": [
+          79.83,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 25,
+      "timestamp": 1.046,
+      "timestamp_str": "00:00:01.045",
+      "track_id": 1,
+      "confidence": 0.433,
+      "bounding_box": [
+        703.4,
+        377.8,
+        744.0,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.16,
+          18.01
+        ],
+        "global_building": [
+          79.84,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 26,
+      "timestamp": 1.088,
+      "timestamp_str": "00:00:01.087",
+      "track_id": 1,
+      "confidence": 0.448,
+      "bounding_box": [
+        703.3,
+        377.4,
+        744.1,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.0
+        ],
+        "global_building": [
+          79.83,
+          58.0
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 27,
+      "timestamp": 1.129,
+      "timestamp_str": "00:00:01.129",
+      "track_id": 1,
+      "confidence": 0.434,
+      "bounding_box": [
+        703.4,
+        377.4,
+        744.1,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.0
+        ],
+        "global_building": [
+          79.83,
+          58.0
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 28,
+      "timestamp": 1.171,
+      "timestamp_str": "00:00:01.171",
+      "track_id": 1,
+      "confidence": 0.445,
+      "bounding_box": [
+        703.3,
+        377.3,
+        744.0,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.18,
+          18.0
+        ],
+        "global_building": [
+          79.82,
+          58.0
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 29,
+      "timestamp": 1.213,
+      "timestamp_str": "00:00:01.213",
+      "track_id": 1,
+      "confidence": 0.429,
+      "bounding_box": [
+        703.5,
+        377.7,
+        744.0,
+        484.7
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.7
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.17,
+          18.01
+        ],
+        "global_building": [
+          79.83,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 30,
+      "timestamp": 1.255,
+      "timestamp_str": "00:00:01.254",
+      "track_id": 1,
+      "confidence": 0.364,
+      "bounding_box": [
+        703.5,
+        377.9,
+        743.9,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.09,
+          18.01
+        ],
+        "global_building": [
+          79.91,
+          58.01
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 31,
+      "timestamp": 1.297,
+      "timestamp_str": "00:00:01.296",
+      "track_id": 1,
+      "confidence": 0.361,
+      "bounding_box": [
+        703.5,
+        378.0,
+        743.9,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.05,
+          18.02
+        ],
+        "global_building": [
+          79.95,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 32,
+      "timestamp": 1.339,
+      "timestamp_str": "00:00:01.338",
+      "track_id": 1,
+      "confidence": 0.362,
+      "bounding_box": [
+        703.5,
+        378.1,
+        743.9,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.02
+        ],
+        "global_building": [
+          79.96,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 33,
+      "timestamp": 1.38,
+      "timestamp_str": "00:00:01.380",
+      "track_id": 1,
+      "confidence": 0.36,
+      "bounding_box": [
+        703.5,
+        378.1,
+        743.9,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.05,
+          18.02
+        ],
+        "global_building": [
+          79.95,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 34,
+      "timestamp": 1.422,
+      "timestamp_str": "00:00:01.422",
+      "track_id": 1,
+      "confidence": 0.359,
+      "bounding_box": [
+        703.6,
+        378.2,
+        743.9,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.7,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.02
+        ],
+        "global_building": [
+          79.96,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 35,
+      "timestamp": 1.464,
+      "timestamp_str": "00:00:01.463",
+      "track_id": 1,
+      "confidence": 0.361,
+      "bounding_box": [
+        703.7,
+        378.2,
+        743.9,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 36,
+      "timestamp": 1.506,
+      "timestamp_str": "00:00:01.505",
+      "track_id": 1,
+      "confidence": 0.364,
+      "bounding_box": [
+        703.7,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.03,
+          18.03
+        ],
+        "global_building": [
+          79.97,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 37,
+      "timestamp": 1.548,
+      "timestamp_str": "00:00:01.547",
+      "track_id": 1,
+      "confidence": 0.366,
+      "bounding_box": [
+        703.7,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 38,
+      "timestamp": 1.589,
+      "timestamp_str": "00:00:01.589",
+      "track_id": 1,
+      "confidence": 0.363,
+      "bounding_box": [
+        703.7,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 39,
+      "timestamp": 1.631,
+      "timestamp_str": "00:00:01.631",
+      "track_id": 1,
+      "confidence": 0.362,
+      "bounding_box": [
+        703.7,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 40,
+      "timestamp": 1.673,
+      "timestamp_str": "00:00:01.673",
+      "track_id": 1,
+      "confidence": 0.361,
+      "bounding_box": [
+        703.7,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 41,
+      "timestamp": 1.715,
+      "timestamp_str": "00:00:01.714",
+      "track_id": 1,
+      "confidence": 0.361,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.02
+        ],
+        "global_building": [
+          79.96,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 42,
+      "timestamp": 1.757,
+      "timestamp_str": "00:00:01.756",
+      "track_id": 1,
+      "confidence": 0.361,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 43,
+      "timestamp": 1.799,
+      "timestamp_str": "00:00:01.798",
+      "track_id": 1,
+      "confidence": 0.362,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.02
+        ],
+        "global_building": [
+          79.96,
+          58.02
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 44,
+      "timestamp": 1.84,
+      "timestamp_str": "00:00:01.840",
+      "track_id": 1,
+      "confidence": 0.386,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.05,
+          18.03
+        ],
+        "global_building": [
+          79.95,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 45,
+      "timestamp": 1.882,
+      "timestamp_str": "00:00:01.882",
+      "track_id": 1,
+      "confidence": 0.388,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.05,
+          18.03
+        ],
+        "global_building": [
+          79.95,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 46,
+      "timestamp": 1.924,
+      "timestamp_str": "00:00:01.924",
+      "track_id": 1,
+      "confidence": 0.382,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.05,
+          18.03
+        ],
+        "global_building": [
+          79.95,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 47,
+      "timestamp": 1.966,
+      "timestamp_str": "00:00:01.965",
+      "track_id": 1,
+      "confidence": 0.381,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.7,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.05,
+          18.03
+        ],
+        "global_building": [
+          79.95,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 48,
+      "timestamp": 2.008,
+      "timestamp_str": "00:00:02.007",
+      "track_id": 1,
+      "confidence": 0.383,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.04,
+          18.03
+        ],
+        "global_building": [
+          79.96,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 49,
+      "timestamp": 2.05,
+      "timestamp_str": "00:00:02.049",
+      "track_id": 1,
+      "confidence": 0.383,
+      "bounding_box": [
+        703.8,
+        378.2,
+        743.8,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.8,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.03,
+          18.03
+        ],
+        "global_building": [
+          79.97,
+          58.03
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 51,
+      "timestamp": 2.133,
+      "timestamp_str": "00:00:02.133",
+      "track_id": 1,
+      "confidence": 0.353,
+      "bounding_box": [
+        703.2,
+        377.8,
+        743.3,
+        484.9
+      ],
+      "footpoint_pixel": [
+        723.2,
+        484.9
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.07,
+          17.96
+        ],
+        "global_building": [
+          79.93,
+          57.96
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    },
+    {
+      "camera_id": "passage1",
+      "frame_number": 52,
+      "timestamp": 2.175,
+      "timestamp_str": "00:00:02.175",
+      "track_id": 1,
+      "confidence": 0.354,
+      "bounding_box": [
+        702.8,
+        377.4,
+        743.2,
+        484.8
+      ],
+      "footpoint_pixel": [
+        723.0,
+        484.8
+      ],
+      "world_coordinates": {
+        "local_ground": [
+          -0.09,
+          17.93
+        ],
+        "global_building": [
+          79.91,
+          57.93
+        ]
+      },
+      "calibration_validity": {
+        "is_valid": true,
+        "status": "VALID",
+        "region_name": "Walkable Carpet Floor",
+        "obstacle_name": null
+      }
+    }
+  ]
+}

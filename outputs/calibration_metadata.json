@@ -1,0 +1,129 @@
+{
+  "camera_id": "passage1",
+  "is_calibrated": true,
+  "rms_reprojection_error_px": 0.0160377560290324,
+  "max_reprojection_error_px": 0.022848429036591823,
+  "condition_number": 226249.45996421447,
+  "H_ground2img": [
+    [
+      -2.2883317963596355,
+      8.253316572819426,
+      574.9848106491082
+    ],
+    [
+      0.7851445969417294,
+      0.001463929031467248,
+      485.0011512311775
+    ],
+    [
+      -0.0019498698236677897,
+      2.486996485871187e-06,
+      1.0
+    ]
+  ],
+  "H_img2ground": [
+    [
+      -3.9752752747542306e-05,
+      1.272772090603846,
+      -617.2730719687663
+    ],
+    [
+      0.2669640222634252,
+      0.18002696557503467,
+      -240.81354334780713
+    ],
+    [
+      -7.414512782135258e-07,
+      0.0024812921654442568,
+      1.0
+    ]
+  ],
+  "landmarks": [
+    {
+      "id": "P1",
+      "name": "Far Left (passage entry end / pantry threshold)",
+      "image_point": [
+        575.0,
+        485.0
+      ],
+      "ground_point": [
+        0.0,
+        0.0
+      ],
+      "reprojection_error_px": 0.015232915470700738
+    },
+    {
+      "id": "P2",
+      "name": "Far Right (passage entry end / pantry threshold)",
+      "image_point": [
+        740.0,
+        485.0
+      ],
+      "ground_point": [
+        0.0,
+        20.0
+      ],
+      "reprojection_error_px": 0.015659505018890806
+    },
+    {
+      "id": "P3",
+      "name": "Mid Left (along passage / Cabin 3F door jamb)",
+      "image_point": [
+        510.3,
+        580.9
+      ],
+      "ground_point": [
+        50.0,
+        0.0
+      ],
+      "reprojection_error_px": 0.022848429036591823
+    },
+    {
+      "id": "P4",
+      "name": "Mid Right (along passage / service door jamb)",
+      "image_point": [
+        693.2,
+        580.9
+      ],
+      "ground_point": [
+        50.0,
+        20.0
+      ],
+      "reprojection_error_px": 0.020931856367453896
+    },
+    {
+      "id": "P5",
+      "name": "Near Left (camera side / Cabin 3G base)",
+      "image_point": [
+        430.0,
+        700.0
+      ],
+      "ground_point": [
+        100.0,
+        0.0
+      ],
+      "reprojection_error_px": 0.009457599431632874
+    },
+    {
+      "id": "P6",
+      "name": "Near Right (camera side / fire exit partition)",
+      "image_point": [
+        635.0,
+        700.0
+      ],
+      "ground_point": [
+        100.0,
+        20.0
+      ],
+      "reprojection_error_px": 0.004044303656909995
+    }
+  ],
+  "global_transform": {
+    "translation": [
+      80.0,
+      40.0
+    ],
+    "rotation_deg": 0.0,
+    "scale": 1.0
+  }
+}
